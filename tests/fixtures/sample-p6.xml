@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<APIBusinessObjects xmlns="http://xmlns.oracle.com/Primavera/P6/V19.12/API/BusinessObjects">
+  <Calendar>
+    <ObjectId>10</ObjectId>
+    <Name>Standard 5 Day</Name>
+    <Type>Global</Type>
+    <HoursPerDay>8</HoursPerDay>
+    <HoursPerWeek>40</HoursPerWeek>
+    <StandardWorkWeek>
+      <StandardWorkHours><DayOfWeek>Sunday</DayOfWeek></StandardWorkHours>
+      <StandardWorkHours><DayOfWeek>Monday</DayOfWeek><WorkTime><Start>08:00:00</Start><Finish>11:59:00</Finish></WorkTime><WorkTime><Start>13:00:00</Start><Finish>16:59:00</Finish></WorkTime></StandardWorkHours>
+      <StandardWorkHours><DayOfWeek>Tuesday</DayOfWeek><WorkTime><Start>08:00:00</Start><Finish>11:59:00</Finish></WorkTime><WorkTime><Start>13:00:00</Start><Finish>16:59:00</Finish></WorkTime></StandardWorkHours>
+      <StandardWorkHours><DayOfWeek>Wednesday</DayOfWeek><WorkTime><Start>08:00:00</Start><Finish>11:59:00</Finish></WorkTime><WorkTime><Start>13:00:00</Start><Finish>16:59:00</Finish></WorkTime></StandardWorkHours>
+      <StandardWorkHours><DayOfWeek>Thursday</DayOfWeek><WorkTime><Start>08:00:00</Start><Finish>11:59:00</Finish></WorkTime><WorkTime><Start>13:00:00</Start><Finish>16:59:00</Finish></WorkTime></StandardWorkHours>
+      <StandardWorkHours><DayOfWeek>Friday</DayOfWeek><WorkTime><Start>08:00:00</Start><Finish>11:59:00</Finish></WorkTime><WorkTime><Start>13:00:00</Start><Finish>16:59:00</Finish></WorkTime></StandardWorkHours>
+      <StandardWorkHours><DayOfWeek>Saturday</DayOfWeek></StandardWorkHours>
+    </StandardWorkWeek>
+    <HolidayOrExceptions>
+      <HolidayOrException><Date>2026-11-26T00:00:00</Date></HolidayOrException>
+    </HolidayOrExceptions>
+  </Calendar>
+  <Resource>
+    <ObjectId>50</ObjectId><Id>PM</Id><Name>Project Manager</Name><ResourceType>Labor</ResourceType><CalendarObjectId>10</CalendarObjectId>
+  </Resource>
+  <ResourceRate><ResourceObjectId>50</ResourceObjectId><EffectiveDate>2020-01-01T00:00:00</EffectiveDate><PricePerUnit>120</PricePerUnit></ResourceRate>
+  <Project>
+    <ObjectId>300</ObjectId>
+    <Id>APP</Id>
+    <Name>Mobile App Launch</Name>
+    <PlannedStartDate>2026-11-16T08:00:00</PlannedStartDate>
+    <ScheduledFinishDate>2026-12-04T17:00:00</ScheduledFinishDate>
+    <ActivityDefaultCalendarObjectId>10</ActivityDefaultCalendarObjectId>
+    <WBSObjectId>3000</WBSObjectId>
+    <WBS><ObjectId>3001</ObjectId><ParentObjectId>3000</ParentObjectId><Code>BLD</Code><Name>Build</Name><SequenceNumber>1</SequenceNumber></WBS>
+    <WBS><ObjectId>3002</ObjectId><ParentObjectId>3000</ParentObjectId><Code>REL</Code><Name>Release</Name><SequenceNumber>2</SequenceNumber></WBS>
+    <Activity>
+      <ObjectId>1</ObjectId><Id>B100</Id><Name>Develop features</Name><WBSObjectId>3001</WBSObjectId><CalendarObjectId>10</CalendarObjectId>
+      <Type>Task Dependent</Type><Status>In Progress</Status><PercentComplete>0.4</PercentComplete>
+      <ActualStartDate>2026-11-16T08:00:00</ActualStartDate><StartDate>2026-11-16T08:00:00</StartDate><FinishDate>2026-11-27T17:00:00</FinishDate>
+      <AtCompletionDuration>72</AtCompletionDuration><TotalFloat>0</TotalFloat>
+    </Activity>
+    <Activity>
+      <ObjectId>2</ObjectId><Id>B110</Id><Name>Write docs</Name><WBSObjectId>3001</WBSObjectId>
+      <Type>Task Dependent</Type><Status>Not Started</Status><PercentComplete>0</PercentComplete>
+      <StartDate>2026-11-18T08:00:00</StartDate><FinishDate>2026-11-20T17:00:00</FinishDate><AtCompletionDuration>24</AtCompletionDuration><TotalFloat>40</TotalFloat>
+      <PrimaryConstraintType>Start On or After</PrimaryConstraintType><PrimaryConstraintDate>2026-11-18T08:00:00</PrimaryConstraintDate>
+    </Activity>
+    <Activity>
+      <ObjectId>3</ObjectId><Id>R100</Id><Name>Store review</Name><WBSObjectId>3002</WBSObjectId>
+      <Type>Task Dependent</Type><Status>Not Started</Status><StartDate>2026-11-30T08:00:00</StartDate><FinishDate>2026-12-03T17:00:00</FinishDate>
+      <AtCompletionDuration>32</AtCompletionDuration><TotalFloat>0</TotalFloat>
+    </Activity>
+    <Activity>
+      <ObjectId>4</ObjectId><Id>R110</Id><Name>Launch</Name><WBSObjectId>3002</WBSObjectId>
+      <Type>Finish Milestone</Type><Status>Not Started</Status><FinishDate>2026-12-04T17:00:00</FinishDate><TotalFloat>0</TotalFloat>
+    </Activity>
+    <Relationship><PredecessorActivityObjectId>1</PredecessorActivityObjectId><SuccessorActivityObjectId>2</SuccessorActivityObjectId><Type>Start to Start</Type><Lag>16</Lag></Relationship>
+    <Relationship><PredecessorActivityObjectId>1</PredecessorActivityObjectId><SuccessorActivityObjectId>3</SuccessorActivityObjectId><Type>Finish to Start</Type><Lag>0</Lag></Relationship>
+    <Relationship><PredecessorActivityObjectId>3</PredecessorActivityObjectId><SuccessorActivityObjectId>4</SuccessorActivityObjectId><Type>Finish to Start</Type><Lag>8</Lag></Relationship>
+    <ResourceAssignment><ObjectId>700</ObjectId><ActivityObjectId>1</ActivityObjectId><ResourceObjectId>50</ResourceObjectId><PlannedUnits>36</PlannedUnits><PlannedUnitsPerTime>0.5</PlannedUnitsPerTime><PlannedCost>4320</PlannedCost></ResourceAssignment>
+  </Project>
+</APIBusinessObjects>

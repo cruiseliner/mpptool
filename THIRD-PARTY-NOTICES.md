@@ -7,7 +7,7 @@ code from the following libraries, which are under their own licenses:
 |---|---|---|
 | [mpxj-rs](https://crates.io/crates/mpxj-rs) — Rust port of [MPXJ](https://github.com/joniles/mpxj) | LGPL-2.1-or-later | Reading MPP/MPX/MSPDI files (default engine) |
 | [mpxrust](https://crates.io/crates/mpxrust) | LGPL-2.1-or-later | Alternative MPP14 reader (`mpxrust` cargo feature, on by default) |
-| clap, serde, serde_json, csv, chrono, libc and their dependencies | MIT and/or Apache-2.0 | CLI, serialization, dates |
+| clap, serde, serde_json, csv, chrono, libc, roxmltree, encoding_rs and their dependencies | MIT and/or Apache-2.0 (encoding_rs: (Apache-2.0 OR MIT) AND BSD-3-Clause) | CLI, serialization, dates, P6 XML parsing, XER text decoding |
 
 ## LGPL obligations for binaries
 

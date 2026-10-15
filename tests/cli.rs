@@ -23,15 +23,16 @@ fn run_ok(args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn plan_xml() -> PathBuf {
-    let out = tmp("plan.xml");
+/// Each test gets its own output file: tests run in parallel and must not share paths.
+fn plan_xml(tag: &str) -> PathBuf {
+    let out = tmp(&format!("plan-{tag}.xml"));
     run_ok(&["from-csv", fixture("plan.csv").to_str().unwrap(), out.to_str().unwrap()]);
     out
 }
 
 #[test]
 fn from_csv_produces_readable_mspdi() {
-    let xml = plan_xml();
+    let xml = plan_xml("a");
     let text = std::fs::read_to_string(&xml).unwrap();
     assert!(text.starts_with("<?xml"));
     assert!(text.contains("<Project xmlns=\"http://schemas.microsoft.com/project\">"));
@@ -49,7 +50,7 @@ fn from_csv_produces_readable_mspdi() {
 
 #[test]
 fn tasks_show_visible_ids_and_uids() {
-    let xml = plan_xml();
+    let xml = plan_xml("b");
     let csv = run_ok(&["tasks", "--csv", xml.to_str().unwrap()]);
     let mut lines = csv.lines();
     let hdr: Vec<&str> = lines.next().unwrap().split(',').collect();
@@ -65,8 +66,8 @@ fn tasks_show_visible_ids_and_uids() {
 
 #[test]
 fn round_trip_is_stable() {
-    let xml = plan_xml();
-    let xml2 = tmp("plan2.xml");
+    let xml = plan_xml("c");
+    let xml2 = tmp("plan-c2.xml");
     run_ok(&["to-xml", xml.to_str().unwrap(), xml2.to_str().unwrap()]);
     let a = run_ok(&["tasks", "--json", xml.to_str().unwrap()]);
     let b = run_ok(&["tasks", "--json", xml2.to_str().unwrap()]);

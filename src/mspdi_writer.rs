@@ -187,6 +187,16 @@ pub fn write(p: &Plan, opts: &WriteOptions) -> String {
     w.tag(1, "DurationFormat", 7);
     w.tag(1, "WorkFormat", 2);
     w.tag(1, "NewTasksAreManual", 0);
+    let has_activity_ids = p.tasks.iter().any(|t| t.activity_id.is_some());
+    if has_activity_ids {
+        w.open(1, "ExtendedAttributes");
+        w.open(2, "ExtendedAttribute");
+        w.tag(3, "FieldID", TEXT1_FIELD_ID);
+        w.tag(3, "FieldName", "Text1");
+        w.tag(3, "Alias", "Activity ID");
+        w.close(2, "ExtendedAttribute");
+        w.close(1, "ExtendedAttributes");
+    }
 
     // Base calendars first so derived calendars can reference them.
     w.open(1, "Calendars");
@@ -272,6 +282,12 @@ pub fn write(p: &Plan, opts: &WriteOptions) -> String {
             w.tag(4, "LagFormat", 7);
             w.close(3, "PredecessorLink");
         }
+        if let Some(code) = t.activity_id.as_deref().filter(|_| has_activity_ids) {
+            w.open(3, "ExtendedAttribute");
+            w.tag(4, "FieldID", TEXT1_FIELD_ID);
+            w.tag(4, "Value", esc(code));
+            w.close(3, "ExtendedAttribute");
+        }
         if t.baseline_start.is_some() || t.baseline_finish.is_some() {
             w.open(3, "Baseline");
             w.tag(4, "Number", 0);
@@ -345,6 +361,9 @@ pub fn write(p: &Plan, opts: &WriteOptions) -> String {
     w.o.push_str("</Project>\n");
     w.o
 }
+
+/// MSPDI field ID of the task Text1 custom field (used for Primavera activity IDs).
+pub const TEXT1_FIELD_ID: i32 = 188743731;
 
 /// Blank task-sheet rows ("null tasks" in MPP files) have no name and no dates.
 pub fn is_null_task(t: &TaskRec) -> bool {

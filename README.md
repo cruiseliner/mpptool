@@ -1,10 +1,11 @@
 # mpptool
 
-**Read Microsoft Project files without Microsoft Project.** mpptool is a small, fast command-line tool written in Rust. It can:
+**Read Microsoft Project and Primavera P6 files without either program.** mpptool is a small, fast command-line tool written in Rust. It can:
 
 - open `.mpp` files from Project 98 through Project 365, plus `.mpx` and Microsoft Project XML,
+- open **Primavera P6** `.xer` exports and P6 XML files, including files that hold several projects,
 - print summaries, tasks, resources, assignments and calendars as tables, JSON or CSV,
-- convert any of those formats to **Microsoft Project XML (MSPDI)**, which Microsoft Project opens directly,
+- convert any of those formats to **Microsoft Project XML (MSPDI)**, which Microsoft Project opens directly (P6 → MS Project included),
 - build a new, scheduled project plan from a simple CSV, including the critical path.
 
 It works on Windows, macOS and Linux, and it is designed so both people and AI agents can script it and improve it.
@@ -25,6 +26,8 @@ mpptool.exe summary "C:\Users\me\Documents\My Plan.mpp"
 mpptool.exe tasks "C:\Users\me\Documents\My Plan.mpp"
 mpptool.exe tasks --csv "C:\Users\me\Documents\My Plan.mpp" > tasks.csv
 mpptool.exe to-xml "C:\Users\me\Documents\My Plan.mpp" "My Plan.xml"
+mpptool.exe summary "C:\Users\me\Documents\Schedule.xer"
+mpptool.exe to-xml "C:\Users\me\Documents\Schedule.xer" "Schedule for MS Project.xml"
 ```
 
 `tasks.csv` opens in Excel. `My Plan.xml` opens in Microsoft Project (File → Open, then choose *XML Format* as the file type).
@@ -52,15 +55,22 @@ mpptool tasks       <file> [--json|--csv]     Every task: ID, UID, outline level
 mpptool resources   <file> [--json|--csv]     Resources: type, max units, rate, email, group, calendar
 mpptool assignments <file> [--json]           Who is assigned to which task: units, work, cost
 mpptool calendars   <file> [--json]           Working week and exceptions (holidays) of each calendar
+mpptool projects    <file>                    Projects in the file (Primavera files can hold several)
 mpptool to-xml      <file> <out.xml> [--pin-dates]   Convert .mpp/.mpx/.xml to Microsoft Project XML
 mpptool from-csv    <in.csv> <out.xml>        Schedule a new plan from CSV
 
 Global options:
   --engine mpxj|mpxrust   Reader (default mpxj; mpxrust = experimental MPP14-only reader)
   --locale de|fr|...      Language of .mpx files (en, de, fr, it, pt, sv, zh, es, ru)
+  --project <id|name>     Project to read from a multi-project Primavera file (default: the first one)
 ```
 
-The file format is detected from the file's content, not its extension.
+The file format is detected from the file's content. The `.xer` extension is used only as a fallback.
+
+| Input | Reader |
+|---|---|
+| `.mpp` (Project 98–365), `.mpx`, Microsoft Project XML | mpxj-rs (default) or mpxrust (`--engine mpxrust`, MPP14 only) |
+| Primavera P6 `.xer`, P6 XML (`APIBusinessObjects`/PMXML) | mpptool's own reader (`src/read_p6.rs`) |
 
 ### Examples
 
@@ -79,6 +89,30 @@ mpptool summary --json plan.mpp | jq .critical_path      # scripting / AI agents
 mpptool tasks --csv plan.mpp > tasks.csv                  # open in Excel / pandas
 mpptool to-xml plan.mpp plan.xml                          # hand to Microsoft Project, ProjectLibre, ...
 ```
+
+### Primavera P6
+
+```bash
+mpptool projects schedule.xer                       # list projects in the file
+mpptool --project BRIDGE tasks schedule.xer         # pick one by id, short name or name
+mpptool --project BRIDGE to-xml schedule.xer bridge.xml   # open bridge.xml in Microsoft Project
+```
+
+How P6 data is mapped:
+
+| P6 | mpptool / Microsoft Project |
+|---|---|
+| WBS (`PROJWBS` / `WBS`) | Summary tasks, with outline level and dotted WBS code. Each WBS node's activities come first, then its child WBS nodes |
+| Activity (`TASK` / `Activity`) | Task: name, start/finish (actual, else remaining/early, else planned), at-completion duration, actual dates, total float |
+| Activity ID (`task_code` / `Id`) | `activity_id` field. In MS Project XML it goes to **Text1**, with the alias "Activity ID" |
+| % complete | According to the activity's type: duration (`(orig − remaining) / orig`), physical, or units |
+| Start / Finish milestones | Milestones (zero duration) |
+| Critical | Not complete and total float ≤ 0 |
+| Primary constraint | Start on → MSO, Start on or after → SNET, Start on or before → SNLT, Finish on → MFO, Finish on or after → FNET, Finish on or before → FNLT, ALAP, Mandatory start/finish → MSO/MFO |
+| Relationships `PR_FS/SS/FF/SF` | FS/SS/FF/SF links with lag (hours; shown in days when whole) |
+| Calendars (`clndr_data` / work week + holidays) | Calendars with working times and exceptions. P6 `hh:59` end times are rounded to the next whole minute |
+| Resources, `RSRCRATE` / `ResourceRate` | Resources (labor/non-labor → Work, material → Material) with their earliest rate |
+| Resource assignments | Assignments with units/time, work and cost. Task cost = sum of assignment costs |
 
 ### Creating a plan from CSV
 
@@ -115,13 +149,14 @@ mpptool from-csv plan.csv plan.xml
 | Calendars: base and resource calendars, working times, exceptions (recurring exceptions are expanded into individual dates) | Work weeks (alternate working periods) |
 | Resources (work/material/cost), assignments (units, work) | Resource availability tables, leveling data |
 
-Before release, every one of 606 sample `.mpp` files from MPXJ's test suite converted to well-formed XML that reads back with identical tasks, links, constraints, deadlines, actuals, notes and calendar exceptions. **Opening the generated XML in real Microsoft Project is not part of automated testing yet.** Please report any file that Project rejects.
+Before release, every one of 606 sample `.mpp` files from MPXJ's test suite converted to well-formed XML that reads back with identical tasks, links, constraints, deadlines, actuals, notes and calendar exceptions. All 12 Primavera samples in MPXJ's suite (7 XER, 5 P6 XML) also convert and read back identically. **Opening the generated XML in real Microsoft Project is not part of automated testing yet.** Please report any file that Project rejects.
 
 ## Limitations
 
 - No native `.mpp` output; only MSPDI XML.
 - Password-protected `.mpp` files cannot be read.
-- Primavera P6, Asta, Phoenix and other non-Microsoft formats are not supported.
+- Asta, Phoenix, Planner and other formats are not supported.
+- Primavera: these are not mapped: secondary constraints, activity codes, UDFs, steps, expenses, baselines (P6 baselines live in separate projects), resource curves, and level-of-effort / WBS-summary semantics (both are read as ordinary tasks). Durations are at-completion hours, not recalculated against calendars. Relationships to activities in *other* projects are dropped. XER from P6 versions older than 6 may use an older calendar format that is not parsed; those calendars fall back to Mon–Fri 08:00–17:00.
 - The `from-csv` scheduler is intentionally simple. It uses one Mon–Fri calendar with no holidays, has no resource leveling, and only supports SNET constraints.
 - Duration months are converted as 20 working days.
 - The readers are young (2026) ports of MPXJ, so expect rough edges on unusual files.
@@ -133,6 +168,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - [ ] `--format json` export of the whole project in one document
 - [ ] Holiday-aware `from-csv` (accept a calendar CSV)
 - [ ] Diff two schedules (`mpptool diff old.mpp new.mpp`)
+- [ ] Primavera: activity codes/UDFs as custom fields, baselines, expenses, cross-project links, writing XER
 - [ ] Code-signed Windows binaries; winget / Homebrew packages
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). AI coding agents should read [AGENTS.md](AGENTS.md).

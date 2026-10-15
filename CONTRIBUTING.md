@@ -28,7 +28,7 @@ MPXJ_DATA=$PWD/corpus/mpxj/junit/data cargo test --test cli
 cargo build --release && scripts/test-corpus.sh            # all ~600 files: read, convert, round-trip
 ```
 
-A change to a reader or writer must keep `scripts/test-corpus.sh` at `xml_not_wellformed=0 roundtrip_mismatch=0`.
+A change to a reader or writer must keep `scripts/test-corpus.sh` and `scripts/test-corpus-p6.sh` at `xml_not_wellformed=0 roundtrip_mismatch=0`.
 
 ## Code layout
 
@@ -37,6 +37,7 @@ A change to a reader or writer must keep `scripts/test-corpus.sh` at `xml_not_we
 | `src/model.rs` | Engine-neutral `Plan` model (tasks, resources, assignments, calendars) |
 | `src/read_mpxj.rs` | Reader using `mpxj-rs` (MPP/MPX/MSPDI) → `Plan` |
 | `src/read_mpxrust.rs` | Alternative MPP14 reader using `mpxrust` (feature `mpxrust`) |
+| `src/read_p6.rs` | Primavera P6 XER / P6 XML reader → `Plan` |
 | `src/mspdi_writer.rs` | `Plan` → Microsoft Project XML |
 | `src/from_csv.rs` | CSV parser and scheduler (forward/backward pass, critical path) |
 | `src/main.rs` | CLI (clap) and table/CSV/JSON output |

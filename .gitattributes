@@ -1,0 +1,2 @@
+# Keep fixtures byte-exact (CRLF + Windows-1252 in the XER fixture are intentional)
+tests/fixtures/*.xer binary

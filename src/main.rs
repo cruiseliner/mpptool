@@ -16,6 +16,9 @@ struct Cli {
     /// Locale of MPX files (en, de, fr, it, pt, sv, zh, es, ru)
     #[arg(long, global = true)]
     locale: Option<String>,
+    /// Project to read from multi-project Primavera files (id, short name or name); default: the first
+    #[arg(long, global = true)]
+    project: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -58,6 +61,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// List the projects contained in a file (Primavera files can hold several)
+    Projects { file: PathBuf },
     /// List calendars and their exceptions (table or --json)
     Calendars {
         file: PathBuf,
@@ -107,7 +112,7 @@ fn run(cli: Cli) -> Result<(), String> {
         EngineArg::Mpxj => Engine::Mpxj,
         EngineArg::Mpxrust => Engine::Mpxrust,
     };
-    let opts = ReadOptions { mpx_locale: cli.locale.clone() };
+    let opts = ReadOptions { mpx_locale: cli.locale.clone(), project: cli.project.clone() };
     let read = |f: &Path| mpptool::read(f, &opts, engine);
     match cli.cmd {
         Cmd::Summary { file, json: j } => {
@@ -172,6 +177,13 @@ fn run(cli: Cli) -> Result<(), String> {
                     a.work_hours,
                     a.cost.map(|c| format!("{c:.2}")).unwrap_or_default()
                 );
+            }
+            Ok(())
+        }
+        Cmd::Projects { file } => {
+            println!("{:<12} {:<20} Name", "Id", "Short name");
+            for (id, short, name) in mpptool::list_projects(&file, &opts, engine)? {
+                println!("{id:<12} {short:<20} {name}");
             }
             Ok(())
         }
@@ -326,6 +338,7 @@ fn write_tasks_csv(p: &Plan) -> Result<(), String> {
         "baseline_start",
         "baseline_finish",
         "notes",
+        "activity_id",
     ])
     .map_err(e)?;
     let hpd = p.minutes_per_day as f64 / 60.0;
@@ -356,6 +369,7 @@ fn write_tasks_csv(p: &Plan) -> Result<(), String> {
             fmt_dt(&t.baseline_start),
             fmt_dt(&t.baseline_finish),
             t.notes.clone().unwrap_or_default(),
+            t.activity_id.clone().unwrap_or_default(),
         ])
         .map_err(e)?;
     }
