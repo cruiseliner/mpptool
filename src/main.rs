@@ -10,8 +10,8 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(name = "mpptool", version, about = "Read/analyze Microsoft Project files and export Microsoft Project XML (MSPDI)")]
 struct Cli {
-    /// Reader engine
-    #[arg(long, global = true, value_enum, default_value_t = EngineArg::Mpxj)]
+    /// Reader engine (only `mpxj`; kept for compatibility)
+    #[arg(long, global = true, value_enum, default_value_t = EngineArg::Mpxj, hide_possible_values = true)]
     engine: EngineArg,
     /// Locale of MPX files (en, de, fr, it, pt, sv, zh, es, ru)
     #[arg(long, global = true)]
@@ -27,7 +27,8 @@ struct Cli {
 enum EngineArg {
     /// mpxj-rs: MPP8/9/12/14, MPX, MSPDI XML
     Mpxj,
-    /// mpxrust: MPP14 only, experimental
+    /// Removed in 0.6.1 (accepted only to print a clear error)
+    #[value(hide = true)]
     Mpxrust,
 }
 
@@ -209,7 +210,11 @@ fn write_file(path: &Path, content: &str) -> Result<(), String> {
 fn run(cli: Cli) -> Result<(), String> {
     let engine = match cli.engine {
         EngineArg::Mpxj => Engine::Mpxj,
-        EngineArg::Mpxrust => Engine::Mpxrust,
+        EngineArg::Mpxrust => {
+            return Err(
+                "the mpxrust reader was removed in mpptool 0.6.1; use the default reader (omit --engine or pass --engine mpxj)".into()
+            );
+        }
     };
     let opts = ReadOptions { mpx_locale: cli.locale.clone(), project: cli.project.clone() };
     let read = |f: &Path| mpptool::read(f, &opts, engine);

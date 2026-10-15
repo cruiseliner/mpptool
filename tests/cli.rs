@@ -136,3 +136,12 @@ fn mpxj_corpus_if_available() {
         run_ok(&["--locale", "de", "summary", de.to_str().unwrap()]);
     }
 }
+
+#[test]
+fn engine_flag_compatibility() {
+    let f = fixture("holiday.xml");
+    run_ok(&["--engine", "mpxj", "summary", f.to_str().unwrap()]);
+    let out = bin().args(["--engine", "mpxrust", "summary", f.to_str().unwrap()]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("removed in mpptool 0.6.1"));
+}

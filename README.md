@@ -73,7 +73,6 @@ mpptool board       <file> <out.html> [--json] [--status-date D] [--title T]
 mpptool portfolio   <folder> <out.html|out.json>   Dashboard of every readable plan in a folder
 
 Global options:
-  --engine mpxj|mpxrust   Reader (default mpxj; mpxrust = experimental MPP14-only reader)
   --locale de|fr|...      Language of .mpx files (en, de, fr, it, pt, sv, zh, es, ru)
   --project <id|name>     Project to read from a multi-project Primavera file (default: the first one)
 ```
@@ -82,7 +81,7 @@ The file format is detected from the file's content. The `.xer` extension is use
 
 | Input | Reader |
 |---|---|
-| `.mpp` (Project 98–365), `.mpx`, Microsoft Project XML | mpxj-rs (default) or mpxrust (`--engine mpxrust`, MPP14 only) |
+| `.mpp` (Project 98–365), `.mpx`, Microsoft Project XML | mpxj-rs |
 | Primavera P6 `.xer`, P6 XML (`APIBusinessObjects`/PMXML) | mpptool's own reader (`src/read_p6.rs`) |
 
 ### Examples
@@ -342,4 +341,4 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). AI coding age
 
 mpptool's own code is dual-licensed under **MIT OR Apache-2.0**, at your option. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
 
-mpptool depends on **[mpxj-rs](https://crates.io/crates/mpxj-rs)** and **[mpxrust](https://crates.io/crates/mpxrust)**, which are licensed under **LGPL-2.1-or-later**. Binaries built from this repository therefore include LGPL code. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for what that means and how to relink. mpptool is an independent project, not affiliated with Microsoft or with the MPXJ project.
+mpptool depends on **[mpxj-rs](https://crates.io/crates/mpxj-rs)**, which is licensed under **LGPL-2.1-or-later**. Binaries built from this repository therefore include LGPL code. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for what that means and how to relink. mpptool is an independent project, not affiliated with Microsoft or with the MPXJ project.

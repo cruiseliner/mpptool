@@ -91,17 +91,6 @@ dependencies = [
 
 [[package]]
 name = "cfb"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a347dcabdae9c31b0825fd6a8bed285ec9c2acb89c47827126d52fa4f59cece3"
-dependencies = [
- "fnv",
- "uuid",
- "web-time",
-]
-
-[[package]]
-name = "cfb"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f13298d9178622b7916ec5d01d470425c04273c8ed07e87b1c38b34c4f4612b"
@@ -373,7 +362,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mpptool"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "clap",
@@ -381,7 +370,6 @@ dependencies = [
  "encoding_rs",
  "libc",
  "mpxj-rs",
- "mpxrust",
  "roxmltree",
  "rust_xlsxwriter",
  "serde",
@@ -396,24 +384,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb3edccf1d43bda1c50d87280c5ac88fd891f1869bd2a53ba08a5b76e9256df2"
 dependencies = [
  "byteorder",
- "cfb 0.15.0",
+ "cfb",
  "chrono",
  "encoding_rs",
  "roxmltree",
  "thiserror",
  "uuid",
-]
-
-[[package]]
-name = "mpxrust"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d130ed3749c369ec5c256decd184835dc491af0711453d6d28f9eeaf6a2d6b5d"
-dependencies = [
- "cfb 0.14.0",
- "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]
