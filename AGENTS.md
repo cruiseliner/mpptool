@@ -36,6 +36,7 @@ scripts/test-corpus-features.sh                    # report commands over every 
 - `tests/fixtures/team.csv` builds (via `from-csv`) a plan where Alice is double-booked in the week of 2026-05-04 — use it for resource-load tests.
 - `tests/fixtures/status-v2.xml` is a later version of `status.xml` (one task added, one renamed/relinked, dates and % changed) for `compare` tests.
 - `tests/fixtures/status.xml` is a hand-written MSPDI plan with a status date, baselines, float, costs, a constraint, SS+lag link and an unassigned task — use it for report tests.
+- `board.rs` and `portfolio.rs` reuse `check::assess` and `variance::variance`; RAG thresholds are documented in README — change both together. `portfolio` must never abort on one bad file: record it in `skipped`.
 - Tests run in parallel. Give every test its own temp file names.
 - `mpxj-rs` is a method-by-method port of Java MPXJ. Its API names mirror Java (`get_unique_id`, `get_predecessors`), and its source is in `~/.cargo/registry/src/*/mpxj-rs-*/src`.
 - Task UID 0 is the project summary task. Rows with no name and no dates are "null tasks" (blank rows) and are written as `<IsNull>1</IsNull>`.

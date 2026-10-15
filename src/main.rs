@@ -141,6 +141,23 @@ enum Cmd {
     ResourcesLoad { file: PathBuf, out: PathBuf },
     /// Export to an Excel workbook (Smartsheet/Excel friendly: indentation, predecessors by row number)
     ToXlsx { file: PathBuf, out: PathBuf },
+    /// Kanban board by status (Not started / In progress / Done) with RAG flags: HTML (or --json)
+    Board {
+        file: PathBuf,
+        /// Output .html file (omit with --json)
+        out: Option<PathBuf>,
+        /// Print the cards as JSON instead
+        #[arg(long)]
+        json: bool,
+        /// Date to judge RAG against (YYYY-MM-DD); default: the file's status date, else today
+        #[arg(long, value_parser = parse_date)]
+        status_date: Option<chrono::NaiveDate>,
+        /// Board title (default: project title)
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Roll up every readable plan in a folder into one dashboard: HTML (.html) or JSON (.json)
+    Portfolio { folder: PathBuf, out: PathBuf },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -399,6 +416,43 @@ fn run(cli: Cli) -> Result<(), String> {
             let p = read(&file)?;
             let n = mpptool::xlsx::write(&p, &out)?;
             eprintln!("wrote {} ({n} rows, {} resources)", out.display(), p.resources.len());
+            Ok(())
+        }
+        Cmd::Board { file, out, json: j, status_date, title } => {
+            let p = read(&file)?;
+            let at =
+                status_date.and_then(|d| d.and_hms_opt(17, 0, 0)).or(p.status_date).unwrap_or_else(|| chrono::Local::now().naive_local());
+            let cards = mpptool::board::cards(&p, at);
+            if j {
+                return json(&cards);
+            }
+            let out = out.ok_or("board needs an output .html file (or --json)")?;
+            write_file(&out, &mpptool::board::to_html(&p, &cards, at, title.as_deref()))?;
+            let n = |r| cards.iter().filter(|c| c.rag == r).count();
+            use mpptool::board::Rag;
+            eprintln!(
+                "wrote {} ({} cards: {} red, {} amber, {} green)",
+                out.display(),
+                cards.len(),
+                n(Rag::Red),
+                n(Rag::Amber),
+                n(Rag::Green)
+            );
+            Ok(())
+        }
+        Cmd::Portfolio { folder, out } => {
+            if !folder.is_dir() {
+                return Err(format!("{} is not a folder", folder.display()));
+            }
+            let pf = mpptool::portfolio::build(&folder, &opts, engine);
+            let as_json = out.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+            let doc = if as_json {
+                serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())? + "\n"
+            } else {
+                mpptool::portfolio::to_html(&pf)
+            };
+            write_file(&out, &doc)?;
+            eprintln!("wrote {} ({} plans, {} files skipped)", out.display(), pf.plans.len(), pf.skipped.len());
             Ok(())
         }
     }

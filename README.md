@@ -68,6 +68,9 @@ mpptool variance    <file> [--json|--csv] [--status-date D]
                                               Baseline vs current/actual slip per task, earned value
 mpptool resources-load <file> <out.html|out.csv>  Weekly hours per resource, over-allocation flagged
 mpptool to-xlsx     <file> <out.xlsx>         Excel workbook for Excel / Smartsheet
+mpptool board       <file> <out.html> [--json] [--status-date D] [--title T]
+                                              Kanban board by status with RAG flags
+mpptool portfolio   <folder> <out.html|out.json>   Dashboard of every readable plan in a folder
 
 Global options:
   --engine mpxj|mpxrust   Reader (default mpxj; mpxrust = experimental MPP14-only reader)
@@ -217,6 +220,34 @@ collapsible row groups, the header row is frozen and has filters.
 4. With dependencies on, Smartsheet re-calculates dates from durations and predecessors using its own
    calendar; set the working days and holidays in Project Settings first so dates match.
 
+### Kanban board
+
+```sh
+mpptool board plan.mpp board.html                       # Not started / In progress / Done
+mpptool board plan.xer --json --status-date 2026-06-30  # the cards as JSON
+```
+
+Each non-summary task becomes a card in *Not started* (0%), *In progress* or *Done* (100% or an actual
+finish), with its parent summary, dates, % complete, resources and a RAG flag judged at the status date
+(from the file, `--status-date`, or today):
+
+- **Red**: unfinished and past its finish date, finishing more than 5 working days later than its baseline, or negative float.
+- **Amber**: not started although its start date has passed, 1–5 working days late against the baseline, or a critical task in progress.
+- **Green**: everything else, including all done tasks.
+
+### Portfolio dashboard
+
+```sh
+mpptool portfolio ./plans portfolio.html    # every .mpp/.mpx/.xml/.xer below ./plans
+mpptool portfolio ./plans portfolio.json
+```
+
+One row per plan (per project for multi-project Primavera files): start, finish, % complete, finish slip
+against the baseline (working days), critical task count, task count and a health score (the % of the
+applicable DCMA 14-point checks that pass, as in `check`). A plan is red when it slips more than 10 working
+days or scores below 50, amber when it slips at all or scores below 75. Files that are not readable plans
+(other XML, password-protected files) are listed separately rather than stopping the run.
+
 ### Primavera P6
 
 ```bash
@@ -289,6 +320,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - `check` test 12 (critical path test) is a static continuity check, not DCMA's delay-and-reschedule test.
 - `compare`/`variance` count slip in Mon–Fri working days and ignore holidays; PV assumes work spread evenly over the baseline, not the timephased baseline.
 - `resources-load` spreads work evenly (no work contours, timephased data or per-resource calendars).
+- `board` and `portfolio` RAG rules are fixed (documented above), not configurable yet.
 - The readers are young (2026) ports of MPXJ, so expect rough edges on unusual files.
 
 ## Roadmap
@@ -300,7 +332,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - [x] Gantt charts (`gantt`) and DCMA 14-point check (`check`) — v0.3.0
 - [x] Diff two schedules (`compare`) and baseline variance / earned value (`variance`) — v0.4.0
 - [x] Resource loading (`resources-load`) and Excel/Smartsheet export (`to-xlsx`) — v0.5.0
-- [ ] Kanban board (`board`) and portfolio dashboard (`portfolio`) — v0.6.0
+- [x] Kanban board (`board`) and portfolio dashboard (`portfolio`) — v0.6.0
 - [ ] Primavera: activity codes/UDFs as custom fields, baselines, expenses, cross-project links, writing XER
 - [ ] Code-signed Windows binaries; winget / Homebrew packages
 
