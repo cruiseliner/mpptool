@@ -27,6 +27,8 @@ pub struct TaskRec {
     pub name: String,
     pub outline_level: i32,
     pub wbs: Option<String>,
+    /// Activity ID / code from the source (e.g. Primavera `task_code`); written to MSPDI as Text1.
+    pub activity_id: Option<String>,
     pub start: Option<NaiveDateTime>,
     pub finish: Option<NaiveDateTime>,
     pub duration_hours: f64,

@@ -1,0 +1,48 @@
+ERMHDR	19.12	2026-10-15	Project	admin	mpptool	dbxDatabaseNoName	Project Management	USD
+%T	PROJECT
+%F	proj_id	proj_short_name	clndr_id	plan_start_date	scd_end_date	last_recalc_date
+%R	100	BRIDGE	10	2026-11-02 08:00	2026-11-20 17:00	2026-11-02 08:00
+%R	200	DEPOT	10	2027-01-04 08:00		2027-01-04 08:00
+%T	CALENDAR
+%F	clndr_id	default_flag	clndr_name	proj_id	base_clndr_id	clndr_type	day_hr_cnt	week_hr_cnt	clndr_data
+%R	10	Y	Standard 5 Day			CA_Base	8	40	(0||CalendarData()((0||DaysOfWeek()((0||1()())(0||2()((0||0(s|08:00|f|12:00)())(0||1(s|13:00|f|17:00)())))(0||3()((0||0(s|08:00|f|12:00)())(0||1(s|13:00|f|17:00)())))(0||4()((0||0(s|08:00|f|12:00)())(0||1(s|13:00|f|17:00)())))(0||5()((0||0(s|08:00|f|12:00)())(0||1(s|13:00|f|17:00)())))(0||6()((0||0(s|08:00|f|12:00)())(0||1(s|13:00|f|17:00)())))(0||7()())))(0||VIEW(ShowTotal|Y)())(0||Exceptions()((0||0(d|46381)())(0||1(d|46387)((0||0(s|08:00|f|12:00)())))))))
+%T	PROJWBS
+%F	wbs_id	proj_id	seq_num	proj_node_flag	wbs_short_name	wbs_name	parent_wbs_id
+%R	1000	100	0	Y	BRIDGE	Bridge Replacement – Café Street	
+%R	1001	100	1	N	DES	Design	1000
+%R	1002	100	2	N	CON	Construction	1000
+%R	1003	100	1	N	FND	Foundations	1002
+%R	2000	200	0	Y	DEPOT	Bus Depot	
+%R	2001	200	1	N	SITE	Site Works	2000
+%T	TASK
+%F	task_id	proj_id	wbs_id	clndr_id	phys_complete_pct	complete_pct_type	task_type	status_code	task_code	task_name	total_float_hr_cnt	remain_drtn_hr_cnt	target_drtn_hr_cnt	act_work_qty	remain_work_qty	cstr_date	act_start_date	act_end_date	early_start_date	early_end_date	restart_date	reend_date	target_start_date	target_end_date	cstr_type
+%R	1	100	1001	10	0	CP_Drtn	TT_Task	TK_Complete	A1000	Survey		0	16	0	0		2026-11-02 08:00	2026-11-03 17:00	2026-11-02 08:00	2026-11-03 17:00			2026-11-02 08:00	2026-11-03 17:00	
+%R	2	100	1001	10	0	CP_Drtn	TT_FinMile	TK_NotStart	A1010	Design approval	0	0	0	0	0				2026-11-03 17:00	2026-11-03 17:00	2026-11-03 17:00	2026-11-03 17:00	2026-11-03 17:00	2026-11-03 17:00	
+%R	3	100	1003	10	0	CP_Drtn	TT_Task	TK_Active	A1020	Piling	0	24	40	0	0		2026-11-04 08:00		2026-11-04 08:00	2026-11-10 17:00	2026-11-04 08:00	2026-11-10 17:00	2026-11-04 08:00	2026-11-10 17:00	
+%R	4	100	1003	10	0	CP_Drtn	TT_Task	TK_NotStart	A1030	Pile caps	16	24	24	0	0	2026-11-09 08:00			2026-11-09 08:00	2026-11-11 17:00	2026-11-09 08:00	2026-11-11 17:00	2026-11-09 08:00	2026-11-11 17:00	CS_MSOA
+%R	5	100	1002	10	0	CP_Drtn	TT_Task	TK_NotStart	A1040	Deck pour	0	56	56	0	0				2026-11-11 08:00	2026-11-19 17:00	2026-11-11 08:00	2026-11-19 17:00	2026-11-11 08:00	2026-11-19 17:00	
+%R	6	100	1002	10	0	CP_Drtn	TT_FinMile	TK_NotStart	A1050	Open to traffic	0	0	0	0	0	2026-11-20 17:00			2026-11-20 17:00	2026-11-20 17:00	2026-11-20 17:00	2026-11-20 17:00	2026-11-20 17:00	2026-11-20 17:00	CS_MEOB
+%R	7	200	2001	10	0	CP_Phys	TT_Task	TK_NotStart	D100	Clear site	0	40	40	0	0				2027-01-04 08:00	2027-01-08 17:00	2027-01-04 08:00	2027-01-08 17:00	2027-01-04 08:00	2027-01-08 17:00	
+%T	TASKPRED
+%F	task_pred_id	task_id	pred_task_id	proj_id	pred_proj_id	pred_type	lag_hr_cnt
+%R	1	2	1	100	100	PR_FS	0
+%R	2	3	2	100	100	PR_FS	0
+%R	3	4	3	100	100	PR_SS	24
+%R	4	5	3	100	100	PR_FS	0
+%R	5	5	4	100	100	PR_FF	-8
+%R	6	6	5	100	100	PR_FS	8
+%T	RSRC
+%F	rsrc_id	rsrc_short_name	rsrc_name	rsrc_type	clndr_id	email_addr
+%R	50	ENG	Site Engineer	RT_Labor	10	eng@example.com
+%R	51	CRANE	Crawler Crane	RT_Equip	10	
+%R	52	CONC	Concrete (m3)	RT_Mat		
+%T	RSRCRATE
+%F	rsrc_rate_id	rsrc_id	cost_per_qty	start_date
+%R	1	50	95.5	2020-01-01 00:00
+%R	2	51	250	2020-01-01 00:00
+%T	TASKRSRC
+%F	taskrsrc_id	task_id	rsrc_id	proj_id	target_qty	target_qty_per_hr	target_cost	remain_cost	act_reg_cost	target_start_date	target_end_date
+%R	900	3	50	100	40	1	3820	2292	1528	2026-11-04 08:00	2026-11-10 17:00
+%R	901	3	51	100	20	0.5	5000	5000	0	2026-11-04 08:00	2026-11-10 17:00
+%R	902	5	52	100	120	0	18000	18000	0	2026-11-11 08:00	2026-11-19 17:00
+%E

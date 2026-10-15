@@ -44,8 +44,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libxml2-utils jq
       - run: scripts/fetch-corpus.sh
       - run: cargo build --release --locked
-      - run: MPXJ_DATA=$PWD/corpus/mpxj/junit/data cargo test --release --locked --test cli
+      - run: MPXJ_DATA=$PWD/corpus/mpxj/junit/data cargo test --release --locked --test cli --test p6
       - name: Full corpus round-trip
         run: |
           scripts/test-corpus.sh | tee corpus.txt
           grep -q "xml_not_wellformed=0 roundtrip_mismatch=0" corpus.txt
+      - name: Primavera P6 corpus round-trip
+        run: |
+          scripts/test-corpus-p6.sh | tee p6.txt
+          grep -q "read_failures=0 xml_not_wellformed=0 roundtrip_mismatch=0" p6.txt

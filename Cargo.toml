@@ -1,12 +1,12 @@
 [package]
 name = "mpptool"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Read and analyze Microsoft Project files (MPP/MPX/MSPDI) and export Microsoft Project XML, from the command line"
+description = "Read and analyze Microsoft Project (MPP/MPX/MSPDI) and Primavera P6 (XER/XML) files and export Microsoft Project XML, from the command line"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-keywords = ["microsoft-project", "mpp", "mspdi", "scheduling", "cli"]
+keywords = ["microsoft-project", "mpp", "primavera", "xer", "scheduling"]
 categories = ["command-line-utilities", "parser-implementations"]
 exclude = ["/corpus", "/target", "/.github"]
 
@@ -30,8 +30,10 @@ strip = true
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 csv = "1.4.0"
+encoding_rs = "0.8.42"
 libc = "0.2.190"
 mpxj-rs = "0.1.1"
 mpxrust = { version = "0.1.0", optional = true }
+roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

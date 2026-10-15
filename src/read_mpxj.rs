@@ -172,6 +172,8 @@ fn convert_calendar(c: &ProjectCalendar) -> Option<CalendarRec> {
 pub struct ReadOptions {
     /// Locale for MPX files (default English).
     pub mpx_locale: Option<String>,
+    /// Project to read from multi-project files (Primavera): ObjectId/proj_id, short name or name.
+    pub project: Option<String>,
 }
 
 pub fn read(path: &Path, opts: &ReadOptions) -> Result<Plan, String> {
@@ -192,6 +194,9 @@ pub fn read(path: &Path, opts: &ReadOptions) -> Result<Plan, String> {
         format!("failed to read {} as {}: {e}{hint}", path.display(), fmt.name())
     })?;
     let pf = pf.borrow();
+    // Files written by mpptool from Primavera carry the P6 activity ID in Text1 with this alias.
+    let text1_is_activity_id = fmt == Format::Mspdi
+        && std::fs::read(path).map(|b| String::from_utf8_lossy(&b).contains("<Alias>Activity ID</Alias>")).unwrap_or(false);
     let props = pf.get_project_properties();
     let mpd = props.get_minutes_per_day().filter(|v| *v > 0).unwrap_or(480);
     let mpw = props.get_minutes_per_week().filter(|v| *v > 0).unwrap_or(2400);
@@ -253,6 +258,7 @@ pub fn read(path: &Path, opts: &ReadOptions) -> Result<Plan, String> {
             name: t.get_name().unwrap_or_default(),
             outline_level: t.get_outline_level().unwrap_or(1),
             wbs: t.get_wbs(),
+            activity_id: if text1_is_activity_id { t.get_text(1) } else { None },
             start: t.get_start(),
             finish: t.get_finish(),
             duration_hours: dur_hours(&t.get_duration(), mpdf, mpwf),
