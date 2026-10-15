@@ -36,7 +36,6 @@ A change to a reader or writer must keep `scripts/test-corpus.sh` and `scripts/t
 |---|---|
 | `src/model.rs` | Engine-neutral `Plan` model (tasks, resources, assignments, calendars) |
 | `src/read_mpxj.rs` | Reader using `mpxj-rs` (MPP/MPX/MSPDI) → `Plan` |
-| `src/read_mpxrust.rs` | Alternative MPP14 reader using `mpxrust` (feature `mpxrust`) |
 | `src/read_p6.rs` | Primavera P6 XER / P6 XML reader → `Plan` |
 | `src/mspdi_writer.rs` | `Plan` → Microsoft Project XML |
 | `src/from_csv.rs` | CSV parser and scheduler (forward/backward pass, critical path) |

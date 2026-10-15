@@ -15,8 +15,6 @@ pub mod model;
 pub mod mspdi_writer;
 pub mod portfolio;
 pub mod read_mpxj;
-#[cfg(feature = "mpxrust")]
-pub mod read_mpxrust;
 pub mod read_p6;
 pub mod resload;
 pub mod variance;
@@ -30,8 +28,6 @@ pub use read_mpxj::ReadOptions;
 pub enum Engine {
     /// `mpxj-rs`: MPP8/9/12/14, MPX, MSPDI.
     Mpxj,
-    /// `mpxrust`: MPP14 only (requires the `mpxrust` feature).
-    Mpxrust,
 }
 
 /// Read a project file with the chosen engine.
@@ -42,10 +38,6 @@ pub fn read(path: &std::path::Path, opts: &ReadOptions, engine: Engine) -> Resul
     }
     match engine {
         Engine::Mpxj => read_mpxj::read(path, opts),
-        #[cfg(feature = "mpxrust")]
-        Engine::Mpxrust => read_mpxrust::read(path),
-        #[cfg(not(feature = "mpxrust"))]
-        Engine::Mpxrust => Err("this build was compiled without the `mpxrust` feature".into()),
     }
 }
 

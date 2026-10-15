@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.6.1 — remove the mpxrust reader
+- Removed the optional `mpxrust` reader, the `mpxrust` cargo feature and the `mpxrust` dependency. mpxj-rs is now the only Microsoft Project reader, so there is no alternative engine to choose. `--engine mpxj` is still accepted and does nothing; `--engine mpxrust` fails with an error pointing at the default reader. The CI job that built without the optional reader is gone.
+
 ## v0.6.0 — Kanban board and portfolio dashboard
 - New `board <file> <out.html>`: kanban view (Not started / In progress / Done) of every non-summary task, with parent, dates, % complete, resources and a RAG flag (red: overdue, > 5 wd late vs baseline or negative float; amber: late start, 1–5 wd late or critical in progress). `--json`, `--status-date`, `--title`.
 - New `portfolio <folder> <out.html|out.json>`: rolls up every readable plan under a folder (each project of multi-project Primavera files) into one dashboard: dates, % complete, finish slip vs baseline, critical count, DCMA health score and RAG. Unreadable files are listed, not fatal.
