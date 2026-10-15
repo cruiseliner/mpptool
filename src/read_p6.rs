@@ -752,6 +752,7 @@ pub fn to_plan(data: &P6Data, sel: Option<&str>) -> Result<Plan, String> {
         minutes_per_day: (hpd * 60.0).round() as i32,
         minutes_per_week: (hpw * 60.0).round() as i32,
         default_calendar_uid: default_cal.as_deref().and_then(cal_uid),
+        status_date: proj.data_date,
         ..Default::default()
     };
     let known_cal: HashSet<&str> = cals.iter().map(|c| c.id.as_str()).collect();

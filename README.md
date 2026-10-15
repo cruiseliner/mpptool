@@ -58,6 +58,10 @@ mpptool calendars   <file> [--json]           Working week and exceptions (holid
 mpptool projects    <file>                    Projects in the file (Primavera files can hold several)
 mpptool to-xml      <file> <out.xml> [--pin-dates]   Convert .mpp/.mpx/.xml to Microsoft Project XML
 mpptool from-csv    <in.csv> <out.xml>        Schedule a new plan from CSV
+mpptool gantt       <file> <out.html|out.svg> [--critical-only] [--from D] [--to D] [--title T]
+                                              Gantt chart: offline HTML page or plain SVG
+mpptool check       <file> [--json] [--status-date D] [--fail-on-error]
+                                              DCMA 14-point schedule assessment
 
 Global options:
   --engine mpxj|mpxrust   Reader (default mpxj; mpxrust = experimental MPP14-only reader)
@@ -89,6 +93,53 @@ mpptool summary --json plan.mpp | jq .critical_path      # scripting / AI agents
 mpptool tasks --csv plan.mpp > tasks.csv                  # open in Excel / pandas
 mpptool to-xml plan.mpp plan.xml                          # hand to Microsoft Project, ProjectLibre, ...
 ```
+
+### Gantt charts
+
+```sh
+mpptool gantt plan.mpp plan.html                    # self-contained HTML (inline SVG, no external assets, works offline)
+mpptool gantt plan.xer plan.svg --critical-only     # plain SVG with only the critical path (and its summary rows)
+mpptool gantt plan.mpp q3.html --from 2026-07-01 --to 2026-09-30 --title "Q3 look-ahead"
+```
+
+The chart shows WBS/outline rows, task bars with % complete fill, summary brackets, milestones as diamonds,
+link arrows (FS/SS/FF/SF), the critical path in red, a dashed "today" line (`--today D` overrides the date),
+and a grey baseline ghost bar under each task that has a baseline. The time scale adapts to the span:
+days (≤ 45 days), weeks (≤ 200 days), months (≤ 900 days) or quarters. Hover a bar for its dates. Very long
+plans are scaled down to keep the chart under 24,000 px wide; thousands of rows render in well under a second.
+
+### Schedule health check (DCMA 14-point)
+
+```sh
+mpptool check plan.mpp                       # table
+mpptool check plan.xer --json                # machine-readable: status, threshold, count, %, offending task IDs
+mpptool check plan.mpp --status-date 2026-06-30 --fail-on-error   # for CI: exit 1 if any check fails
+```
+
+| # | Check | Threshold | Needs |
+|---|---|---|---|
+| 1 | Logic: incomplete tasks missing a predecessor or successor | ≤ 5% | – |
+| 2 | Leads (negative lag) | 0 | – |
+| 3 | Lags (positive lag) | ≤ 5% of relationships | – |
+| 4 | Relationship types | ≥ 90% FS | – |
+| 5 | Hard constraints (MSO, MFO, SNLT, FNLT) | ≤ 5% | – |
+| 6 | High float (> 44 working days) | ≤ 5% | total float |
+| 7 | Negative float | 0 | total float |
+| 8 | High duration (> 44 working days) | ≤ 5% | – |
+| 9 | Invalid dates: actuals after, or unstarted/unfinished forecasts before, the status date | 0 | status date |
+| 10 | Resources: tasks with duration and no assignment | 0% | resources in the plan |
+| 11 | Missed tasks: baselined to finish by the status date but finished (or forecast) late | ≤ 5% | baseline + status date |
+| 12 | Critical path test (continuity, see below) | continuous | critical flags |
+| 13 | CPLI = (remaining critical path length + finish float) / length | ≥ 0.95 | total float |
+| 14 | BEI = completed tasks / tasks baselined to finish by the status date | ≥ 0.95 | baseline + status date |
+
+Population: non-summary tasks; checks 1–8 and 10 use incomplete tasks, relationship checks use links into
+incomplete tasks. The status date comes from the file (MS Project status date, P6 data date) or `--status-date`.
+Checks whose data is missing are reported as `skipped` with the reason, never as failures. The exit code is
+always 0 unless `--fail-on-error` is given. Notes: check 12 is a static approximation — DCMA's real test
+delays a critical task and re-schedules, which needs a scheduling engine; mpptool instead verifies that the
+project's finish activity is critical and traces the critical chain back from it. CPLI estimates working days
+as 5/7 of calendar days.
 
 ### Primavera P6
 
@@ -159,6 +210,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - Primavera: these are not mapped: secondary constraints, activity codes, UDFs, steps, expenses, baselines (P6 baselines live in separate projects), resource curves, and level-of-effort / WBS-summary semantics (both are read as ordinary tasks). Durations are at-completion hours, not recalculated against calendars. Relationships to activities in *other* projects are dropped. XER from P6 versions older than 6 may use an older calendar format that is not parsed; those calendars fall back to Mon–Fri 08:00–17:00.
 - The `from-csv` scheduler is intentionally simple. It uses one Mon–Fri calendar with no holidays, has no resource leveling, and only supports SNET constraints.
 - Duration months are converted as 20 working days.
+- `check` test 12 (critical path test) is a static continuity check, not DCMA's delay-and-reschedule test.
 - The readers are young (2026) ports of MPXJ, so expect rough edges on unusual files.
 
 ## Roadmap
@@ -167,7 +219,10 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - [ ] Custom fields, baselines 1–10, work weeks, timephased data in `to-xml`
 - [ ] `--format json` export of the whole project in one document
 - [ ] Holiday-aware `from-csv` (accept a calendar CSV)
-- [ ] Diff two schedules (`mpptool diff old.mpp new.mpp`)
+- [x] Gantt charts (`gantt`) and DCMA 14-point check (`check`) — v0.3.0
+- [ ] Diff two schedules (`compare`) and baseline variance / earned value (`variance`) — v0.4.0
+- [ ] Resource loading (`resources-load`) and Excel/Smartsheet export (`to-xlsx`) — v0.5.0
+- [ ] Kanban board (`board`) and portfolio dashboard (`portfolio`) — v0.6.0
 - [ ] Primavera: activity codes/UDFs as custom fields, baselines, expenses, cross-project links, writing XER
 - [ ] Code-signed Windows binaries; winget / Homebrew packages
 

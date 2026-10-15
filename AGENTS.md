@@ -18,6 +18,7 @@ scripts/fetch-corpus.sh
 cargo build --release && scripts/test-corpus.sh   # expect: read_failures=3 (password-protected) xml_not_wellformed=0 roundtrip_mismatch=0
 scripts/test-corpus-p6.sh                         # expect: read_failures=0 xml_not_wellformed=0 roundtrip_mismatch=0
 MPXJ_DATA=$PWD/corpus/mpxj/junit/data cargo test --test cli --test p6
+scripts/test-corpus-features.sh                    # report commands over every file; expect: feature_failures=0
 ```
 
 ## Rules
@@ -31,6 +32,8 @@ MPXJ_DATA=$PWD/corpus/mpxj/junit/data cargo test --test cli --test p6
 
 ## Useful facts
 - Primavera: `read_p6.rs` parses XER (`%T/%F/%R` tables, `clndr_data` calendar mini-language) or P6 XML (roxmltree) into `P6Data`, then `to_plan` maps a single project onto `Plan`. P6 ids are remapped to sequential UIDs. P6 durations, lags and float are in hours.
+- Report commands live in their own modules (`gantt.rs`, `check.rs`, …): they take a `&Plan` and return a `String` or a serializable struct; `main.rs` only parses arguments and writes files. Never change the output of existing commands; add fields/commands instead. New `Plan`/`TaskRec` fields must not change existing JSON output (`#[serde(skip)]` or not serialized).
+- `tests/fixtures/status.xml` is a hand-written MSPDI plan with a status date, baselines, float, costs, a constraint, SS+lag link and an unassigned task — use it for report tests.
 - Tests run in parallel. Give every test its own temp file names.
 - `mpxj-rs` is a method-by-method port of Java MPXJ. Its API names mirror Java (`get_unique_id`, `get_predecessors`), and its source is in `~/.cargo/registry/src/*/mpxj-rs-*/src`.
 - Task UID 0 is the project summary task. Rows with no name and no dates are "null tasks" (blank rows) and are written as `<IsNull>1</IsNull>`.
