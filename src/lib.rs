@@ -6,7 +6,9 @@
 //! let xml = mpptool::mspdi_writer::write(&plan, &Default::default());
 //! # Ok::<(), String>(())
 //! ```
+pub mod check;
 pub mod from_csv;
+pub mod gantt;
 pub mod model;
 pub mod mspdi_writer;
 pub mod read_mpxj;

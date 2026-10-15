@@ -144,6 +144,8 @@ pub struct Plan {
     pub minutes_per_day: i32,
     pub minutes_per_week: i32,
     pub default_calendar_uid: Option<i32>,
+    /// Status / data date (MS Project status date, Primavera data date), if set.
+    pub status_date: Option<NaiveDateTime>,
     pub calendars: Vec<CalendarRec>,
     pub tasks: Vec<TaskRec>,
     pub resources: Vec<ResourceRec>,

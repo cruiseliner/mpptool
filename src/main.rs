@@ -79,6 +79,43 @@ enum Cmd {
     },
     /// Schedule a new plan from CSV (name,start,duration_days,predecessors,outline_level[,resources,notes]) -> MSPDI XML
     FromCsv { input: PathBuf, out: PathBuf },
+    /// Render a Gantt chart: self-contained offline HTML (.html) or plain SVG (.svg)
+    Gantt {
+        file: PathBuf,
+        /// Output file; .svg writes plain SVG, anything else an HTML page
+        out: PathBuf,
+        /// Only show critical tasks (and their summary rows)
+        #[arg(long)]
+        critical_only: bool,
+        /// Window start (YYYY-MM-DD)
+        #[arg(long, value_parser = parse_date)]
+        from: Option<chrono::NaiveDate>,
+        /// Window end (YYYY-MM-DD)
+        #[arg(long, value_parser = parse_date)]
+        to: Option<chrono::NaiveDate>,
+        /// Chart title (default: project title)
+        #[arg(long)]
+        title: Option<String>,
+        /// Date for the "today" line (default: the current date)
+        #[arg(long, value_parser = parse_date)]
+        today: Option<chrono::NaiveDate>,
+    },
+    /// DCMA 14-point schedule assessment (table or --json)
+    Check {
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+        /// Status date to assess against (YYYY-MM-DD); default: the file's status/data date
+        #[arg(long, value_parser = parse_date)]
+        status_date: Option<chrono::NaiveDate>,
+        /// Exit with status 1 when any check fails
+        #[arg(long)]
+        fail_on_error: bool,
+    },
+}
+
+fn parse_date(s: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| format!("'{s}': {e} (want YYYY-MM-DD)"))
 }
 
 fn main() -> ExitCode {
@@ -238,7 +275,65 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        Cmd::Gantt { file, out, critical_only, from, to, title, today } => {
+            let p = read(&file)?;
+            let o = mpptool::gantt::GanttOptions { critical_only, from, to, title, today };
+            let svg = out.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+            let doc = if svg { mpptool::gantt::render_svg(&p, &o) } else { mpptool::gantt::render_html(&p, &o) };
+            write_file(&out, &doc)?;
+            eprintln!("wrote {} ({} tasks)", out.display(), p.tasks.len());
+            Ok(())
+        }
+        Cmd::Check { file, json: j, status_date, fail_on_error } => {
+            let p = read(&file)?;
+            let o = mpptool::check::CheckOptions { status_date: status_date.and_then(|d| d.and_hms_opt(17, 0, 0)) };
+            let a = mpptool::check::assess(&p, &o);
+            if j {
+                json(&a)?;
+            } else {
+                print_check(&a);
+            }
+            if fail_on_error && a.failed > 0 {
+                return Err(format!("{} of 14 checks failed", a.failed));
+            }
+            Ok(())
+        }
     }
+}
+
+fn print_check(a: &mpptool::check::Assessment) {
+    println!(
+        "DCMA 14-point assessment: {} activities ({} incomplete), {} relationships, status date {}",
+        a.activities,
+        a.incomplete_activities,
+        a.relationships,
+        a.status_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "none".into())
+    );
+    println!("{:>2}  {:<44} {:<8} {:>10} {:>8} {:>8}  Offending IDs / note", "#", "Check", "Result", "Threshold", "Count", "Value");
+    for c in &a.checks {
+        let value = match (c.value, c.percent) {
+            (Some(v), _) => format!("{v:.2}"),
+            (None, Some(p)) => format!("{p:.1}%"),
+            _ => String::new(),
+        };
+        let mut ids = c.task_ids.iter().take(10).cloned().collect::<Vec<_>>().join(",");
+        if c.task_ids.len() > 10 {
+            ids += &format!(",… (+{})", c.task_ids.len() - 10);
+        }
+        let extra = if ids.is_empty() { c.note.clone().unwrap_or_default() } else { ids };
+        let count = if c.status == "skipped" { String::new() } else { format!("{}/{}", c.count, c.total) };
+        println!(
+            "{:>2}  {:<44} {:<8} {:>10} {:>8} {:>8}  {}",
+            c.number,
+            trunc(&c.name, 44),
+            c.status.to_uppercase(),
+            c.threshold,
+            count,
+            value,
+            extra
+        );
+    }
+    println!("passed {}, failed {}, skipped {}", a.passed, a.failed, a.skipped);
 }
 
 fn opt_i(v: Option<i32>) -> String {

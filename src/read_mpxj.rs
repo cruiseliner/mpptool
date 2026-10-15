@@ -217,6 +217,7 @@ pub fn read(path: &Path, opts: &ReadOptions) -> Result<Plan, String> {
         minutes_per_day: mpd,
         minutes_per_week: mpw,
         default_calendar_uid: props.get_default_calendar_unique_id(),
+        status_date: props.get_status_date(),
         ..Default::default()
     };
     for c in pf.get_calendars().iter() {
