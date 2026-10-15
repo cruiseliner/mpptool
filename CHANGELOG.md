@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.0 — Kanban board and portfolio dashboard
+- New `board <file> <out.html>`: kanban view (Not started / In progress / Done) of every non-summary task, with parent, dates, % complete, resources and a RAG flag (red: overdue, > 5 wd late vs baseline or negative float; amber: late start, 1–5 wd late or critical in progress). `--json`, `--status-date`, `--title`.
+- New `portfolio <folder> <out.html|out.json>`: rolls up every readable plan under a folder (each project of multi-project Primavera files) into one dashboard: dates, % complete, finish slip vs baseline, critical count, DCMA health score and RAG. Unreadable files are listed, not fatal.
+
 ## v0.5.0 — Resource loading and Excel/Smartsheet export
 - New `resources-load <file> <out.html|out.csv>`: weekly work hours per resource versus capacity (max units × hours per week), with over-allocated weeks flagged. Self-contained HTML heat map or long-format CSV.
 - New `to-xlsx <file> <out.xlsx>`: Excel workbook (pure Rust, rust_xlsxwriter) with a Tasks sheet (indented names, outline level, collapsible row groups, dates, duration, % complete, predecessors by row number, assigned resources, flags, baseline dates, notes) and a Resources sheet. README explains importing into Smartsheet.

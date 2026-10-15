@@ -27,5 +27,12 @@ while IFS= read -r f; do
   if timeout 60 "$B" to-xlsx "$f" "$OUT/x.xlsx" 2>/dev/null; then
     if command -v unzip >/dev/null; then unzip -tq "$OUT/x.xlsx" >/dev/null 2>&1 || fail XLSX_CORRUPT; fi
   else fail TO_XLSX; fi
+  timeout 60 "$B" board "$f" "$OUT/b.html" --status-date 2020-01-01 2>/dev/null || fail BOARD_HTML
+  timeout 60 "$B" board --json "$f" 2>/dev/null | jq -e 'type=="array"' >/dev/null || fail BOARD_JSON
 done < <(find "$DIR" \( -name '*.mpp' -o -name '*.xer' -o -name '*.xml' \) | sort)
+# Portfolio over the whole folder: every file read above must appear as a plan.
+if timeout 600 "$B" portfolio "$DIR" "$OUT/portfolio.json" 2>/dev/null; then
+  jq -e '.plans|length>0' "$OUT/portfolio.json" >/dev/null || { bad=$((bad + 1)); echo "PORTFOLIO_EMPTY" >>"$OUT/feature-failures.txt"; }
+  timeout 600 "$B" portfolio "$DIR" "$OUT/portfolio.html" 2>/dev/null || { bad=$((bad + 1)); echo "PORTFOLIO_HTML" >>"$OUT/feature-failures.txt"; }
+else bad=$((bad + 1)); echo "PORTFOLIO" >>"$OUT/feature-failures.txt"; fi
 echo "feature_files=$files feature_failures=$bad unreadable_skipped=$skipped (details: $OUT/feature-failures.txt)"

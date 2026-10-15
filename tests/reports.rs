@@ -257,3 +257,65 @@ fn unzip_text(bytes: &[u8]) -> String {
     }
     all
 }
+
+// ---- v0.6.0: board / portfolio ----
+
+#[test]
+fn board_columns_and_rag() {
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["board", "--json", &fixture("status.xml")])).unwrap();
+    let cards = v.as_array().unwrap();
+    assert_eq!(cards.len(), 6, "summary rows are not cards");
+    let card = |k: &str| cards.iter().find(|c| c["key"] == k).unwrap();
+    assert_eq!(card("2")["status"], "Done");
+    assert_eq!(card("2")["rag"], "green");
+    assert_eq!(card("4")["status"], "In progress");
+    assert_eq!(card("5")["status"], "Not started");
+    assert_eq!(card("5")["rag"], "amber"); // start date passed
+    assert_eq!(card("5")["parent"], "Office fit-out");
+    // Later status date: unfinished tasks become overdue (red).
+    let v: serde_json::Value =
+        serde_json::from_str(&run_ok(&["board", "--json", "--status-date", "2026-04-30", &fixture("status.xml")])).unwrap();
+    let red = v.as_array().unwrap().iter().filter(|c| c["rag"] == "red").count();
+    assert_eq!(red, 4);
+    let out = tmp("board.html");
+    run_ok(&["board", &fixture("status.xml"), out.to_str().unwrap(), "--title", "Fit-out board"]);
+    let h = std::fs::read_to_string(&out).unwrap();
+    assert!(h.starts_with("<!DOCTYPE html>") && h.contains("Fit-out board") && !h.contains("http"));
+    for col in ["Not started", "In progress", "Done"] {
+        assert!(h.contains(&format!("<h2>{col} ")), "{col}");
+    }
+    assert_eq!(h.matches("class=\"card ").count(), 6);
+    // Without an output file and without --json: a clear error.
+    assert!(!run(&["board", &fixture("status.xml")]).status.success());
+}
+
+#[test]
+fn portfolio_rolls_up_a_folder() {
+    let dir = tmp("pf");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("p6")).unwrap();
+    for f in ["status.xml", "status-v2.xml", "holiday.xml"] {
+        std::fs::copy(fixture(f), dir.join(f)).unwrap();
+    }
+    std::fs::copy(fixture("multi-project.xer"), dir.join("p6/multi.xer")).unwrap();
+    std::fs::write(dir.join("notes.xml"), "<notes/>").unwrap();
+    std::fs::write(dir.join("readme.txt"), "ignored").unwrap();
+    let json = tmp("pf.json");
+    run_ok(&["portfolio", dir.to_str().unwrap(), json.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let plans = v["plans"].as_array().unwrap();
+    assert_eq!(plans.len(), 5, "3 MSPDI + 2 projects of the XER");
+    assert_eq!(v["skipped"].as_array().unwrap().len(), 1);
+    assert_eq!(v["skipped"][0]["file"], "notes.xml");
+    let st = plans.iter().find(|p| p["file"] == "status-v2.xml").unwrap();
+    assert_eq!(st["finish_slip_days"], 3);
+    assert_eq!(st["rag"], "red");
+    assert!(st["health_score"].as_f64().unwrap() > 0.0);
+    let projects: Vec<&str> = plans.iter().filter(|p| p["file"] == "p6/multi.xer").map(|p| p["project"].as_str().unwrap()).collect();
+    assert_eq!(projects, ["BRIDGE", "DEPOT"]);
+    let html = tmp("pf.html");
+    run_ok(&["portfolio", dir.to_str().unwrap(), html.to_str().unwrap()]);
+    let h = std::fs::read_to_string(&html).unwrap();
+    assert!(h.starts_with("<!DOCTYPE html>") && h.contains("Bus Depot") && h.contains("could not be read") && !h.contains("http"));
+    assert!(!run(&["portfolio", &fixture("status.xml"), html.to_str().unwrap()]).status.success(), "not a folder");
+}

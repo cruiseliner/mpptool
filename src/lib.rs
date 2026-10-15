@@ -6,12 +6,14 @@
 //! let xml = mpptool::mspdi_writer::write(&plan, &Default::default());
 //! # Ok::<(), String>(())
 //! ```
+pub mod board;
 pub mod check;
 pub mod compare;
 pub mod from_csv;
 pub mod gantt;
 pub mod model;
 pub mod mspdi_writer;
+pub mod portfolio;
 pub mod read_mpxj;
 #[cfg(feature = "mpxrust")]
 pub mod read_mpxrust;
