@@ -62,6 +62,10 @@ mpptool gantt       <file> <out.html|out.svg> [--critical-only] [--from D] [--to
                                               Gantt chart: offline HTML page or plain SVG
 mpptool check       <file> [--json] [--status-date D] [--fail-on-error]
                                               DCMA 14-point schedule assessment
+mpptool compare     <old> <new> [--format text|json|html] [-o out] [--match auto|uid|activity-id|name]
+                                              Diff two versions of a plan
+mpptool variance    <file> [--json|--csv] [--status-date D]
+                                              Baseline vs current/actual slip per task, earned value
 
 Global options:
   --engine mpxj|mpxrust   Reader (default mpxj; mpxrust = experimental MPP14-only reader)
@@ -141,6 +145,38 @@ delays a critical task and re-schedules, which needs a scheduling engine; mpptoo
 project's finish activity is critical and traces the critical chain back from it. CPLI estimates working days
 as 5/7 of calendar days.
 
+### Comparing versions and baseline variance
+
+```sh
+mpptool compare plan-v1.mpp plan-v2.mpp                     # text: added/removed tasks, changed fields
+mpptool compare old.xer new.xer --format html -o diff.html  # self-contained HTML report
+mpptool compare a.mpp b.mpp --format json --match name      # match tasks by name instead of ID
+mpptool variance plan.mpp                                   # slip per task vs baseline + earned value
+mpptool variance plan.mpp --csv --status-date 2026-06-30 > variance.csv
+```
+
+`compare` matches tasks by unique ID (Microsoft Project UIDs are stable across saves), or by Activity ID when
+both files have them (Primavera). It reports tasks added and removed, and for matched tasks changes to name,
+start, finish (with the shift in working days), duration, % complete, milestone flag and predecessor links
+(type and lag), plus the movement of the project finish.
+
+`variance` lists every task with a baseline: baseline vs current dates (actual dates when the task has
+them), start and finish slip in Mon–Fri working days, and duration variance. When the file has baseline costs
+it adds earned value at the status date (from the file or `--status-date`):
+
+| Metric | Meaning |
+|---|---|
+| BAC | baseline cost (budget at completion) |
+| PV (BCWS) | baseline cost × planned fraction at the status date (linear over the baseline's working days) |
+| EV (BCWP) | baseline cost × % complete |
+| AC (ACWP) | actual cost |
+| SV / CV | EV − PV / EV − AC |
+| SPI / CPI | EV / PV / EV / AC |
+| EAC | BAC / CPI |
+
+Totals are summed over non-summary tasks. Primavera files carry no baselines (P6 keeps baselines as separate
+projects), so `variance` reports "no baseline" for them; `compare` an older export with the current one instead.
+
 ### Primavera P6
 
 ```bash
@@ -211,6 +247,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - The `from-csv` scheduler is intentionally simple. It uses one Mon–Fri calendar with no holidays, has no resource leveling, and only supports SNET constraints.
 - Duration months are converted as 20 working days.
 - `check` test 12 (critical path test) is a static continuity check, not DCMA's delay-and-reschedule test.
+- `compare`/`variance` count slip in Mon–Fri working days and ignore holidays; PV assumes work spread evenly over the baseline, not the timephased baseline.
 - The readers are young (2026) ports of MPXJ, so expect rough edges on unusual files.
 
 ## Roadmap
@@ -220,7 +257,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - [ ] `--format json` export of the whole project in one document
 - [ ] Holiday-aware `from-csv` (accept a calendar CSV)
 - [x] Gantt charts (`gantt`) and DCMA 14-point check (`check`) — v0.3.0
-- [ ] Diff two schedules (`compare`) and baseline variance / earned value (`variance`) — v0.4.0
+- [x] Diff two schedules (`compare`) and baseline variance / earned value (`variance`) — v0.4.0
 - [ ] Resource loading (`resources-load`) and Excel/Smartsheet export (`to-xlsx`) — v0.5.0
 - [ ] Kanban board (`board`) and portfolio dashboard (`portfolio`) — v0.6.0
 - [ ] Primavera: activity codes/UDFs as custom fields, baselines, expenses, cross-project links, writing XER

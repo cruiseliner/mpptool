@@ -282,6 +282,8 @@ pub fn read(path: &Path, opts: &ReadOptions) -> Result<Plan, String> {
             fixed_cost: t.get_fixed_cost(),
             actual_cost: t.get_actual_cost(),
             calendar_uid: t.get_calendar_unique_id(),
+            baseline_duration_hours: t.get_baseline_duration().map(|d| dur_hours(&Some(d), mpdf, mpwf)),
+            baseline_cost: t.get_baseline_cost(),
         });
     }
     for r in pf.get_resources().iter() {

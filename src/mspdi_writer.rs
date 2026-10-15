@@ -186,6 +186,7 @@ pub fn write(p: &Plan, opts: &WriteOptions) -> String {
     w.tag(1, "DaysPerMonth", 20);
     w.tag(1, "DurationFormat", 7);
     w.tag(1, "WorkFormat", 2);
+    w.opt_dt(1, "StatusDate", &p.status_date);
     w.tag(1, "NewTasksAreManual", 0);
     let has_activity_ids = p.tasks.iter().any(|t| t.activity_id.is_some());
     if has_activity_ids {
@@ -293,6 +294,13 @@ pub fn write(p: &Plan, opts: &WriteOptions) -> String {
             w.tag(4, "Number", 0);
             w.opt_dt(4, "Start", &t.baseline_start);
             w.opt_dt(4, "Finish", &t.baseline_finish);
+            if let Some(h) = t.baseline_duration_hours {
+                w.tag(4, "Duration", pt(h));
+                w.tag(4, "DurationFormat", 7);
+            }
+            if let Some(c) = t.baseline_cost {
+                w.tag(4, "Cost", money(c));
+            }
             w.close(3, "Baseline");
         }
         w.close(2, "Task");

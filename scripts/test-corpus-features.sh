@@ -18,5 +18,9 @@ while IFS= read -r f; do
   grep -qE '(src|href)="https?:' "$OUT/g.html" && fail GANTT_EXTERNAL_ASSET
   timeout 60 "$B" check --json "$f" 2>/dev/null | jq -e '.checks|length==14' >/dev/null || fail CHECK_JSON
   timeout 60 "$B" check "$f" >/dev/null 2>&1 || fail CHECK_TEXT
+  timeout 60 "$B" compare --format json "$f" "$f" 2>/dev/null | jq -e '(.added|length)==0 and (.removed|length)==0 and (.changed|length)==0' >/dev/null || fail COMPARE_SELF
+  timeout 60 "$B" compare --format html -o "$OUT/c.html" "$f" "$f" 2>/dev/null || fail COMPARE_HTML
+  timeout 60 "$B" variance --json "$f" 2>/dev/null | jq -e '.tasks' >/dev/null || fail VARIANCE_JSON
+  timeout 60 "$B" variance --csv "$f" >/dev/null 2>&1 || fail VARIANCE_CSV
 done < <(find "$DIR" \( -name '*.mpp' -o -name '*.xer' -o -name '*.xml' \) | sort)
 echo "feature_files=$files feature_failures=$bad unreadable_skipped=$skipped (details: $OUT/feature-failures.txt)"

@@ -33,6 +33,7 @@ scripts/test-corpus-features.sh                    # report commands over every 
 ## Useful facts
 - Primavera: `read_p6.rs` parses XER (`%T/%F/%R` tables, `clndr_data` calendar mini-language) or P6 XML (roxmltree) into `P6Data`, then `to_plan` maps a single project onto `Plan`. P6 ids are remapped to sequential UIDs. P6 durations, lags and float are in hours.
 - Report commands live in their own modules (`gantt.rs`, `check.rs`, …): they take a `&Plan` and return a `String` or a serializable struct; `main.rs` only parses arguments and writes files. Never change the output of existing commands; add fields/commands instead. New `Plan`/`TaskRec` fields must not change existing JSON output (`#[serde(skip)]` or not serialized).
+- `tests/fixtures/status-v2.xml` is a later version of `status.xml` (one task added, one renamed/relinked, dates and % changed) for `compare` tests.
 - `tests/fixtures/status.xml` is a hand-written MSPDI plan with a status date, baselines, float, costs, a constraint, SS+lag link and an unassigned task — use it for report tests.
 - Tests run in parallel. Give every test its own temp file names.
 - `mpxj-rs` is a method-by-method port of Java MPXJ. Its API names mirror Java (`get_unique_id`, `get_predecessors`), and its source is in `~/.cargo/registry/src/*/mpxj-rs-*/src`.
