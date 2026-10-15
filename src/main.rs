@@ -137,6 +137,10 @@ enum Cmd {
         #[arg(long, value_parser = parse_date)]
         status_date: Option<chrono::NaiveDate>,
     },
+    /// Weekly work hours per resource with over-allocation flagged: HTML heat map (.html) or CSV (.csv)
+    ResourcesLoad { file: PathBuf, out: PathBuf },
+    /// Export to an Excel workbook (Smartsheet/Excel friendly: indentation, predecessors by row number)
+    ToXlsx { file: PathBuf, out: PathBuf },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -373,6 +377,29 @@ fn run(cli: Cli) -> Result<(), String> {
                 print_variance(&v);
                 Ok(())
             }
+        }
+        Cmd::ResourcesLoad { file, out } => {
+            let p = read(&file)?;
+            let r = mpptool::resload::load(&p);
+            let csv = out.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"));
+            let title = p.title.clone().or(p.name.clone()).unwrap_or_else(|| "Project".into());
+            write_file(&out, &if csv { mpptool::resload::to_csv(&r)? } else { mpptool::resload::to_html(&r, &title) })?;
+            let over: Vec<&str> = r.resources.iter().filter(|x| x.over_allocated_weeks > 0).map(|x| x.name.as_str()).collect();
+            eprintln!(
+                "wrote {} ({} resources, {} weeks, {} over-allocated{})",
+                out.display(),
+                r.resources.len(),
+                r.weeks.len(),
+                over.len(),
+                if over.is_empty() { String::new() } else { format!(": {}", over.join(", ")) }
+            );
+            Ok(())
+        }
+        Cmd::ToXlsx { file, out } => {
+            let p = read(&file)?;
+            let n = mpptool::xlsx::write(&p, &out)?;
+            eprintln!("wrote {} ({n} rows, {} resources)", out.display(), p.resources.len());
+            Ok(())
         }
     }
 }

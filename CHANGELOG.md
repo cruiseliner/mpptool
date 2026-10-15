@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.0 — Resource loading and Excel/Smartsheet export
+- New `resources-load <file> <out.html|out.csv>`: weekly work hours per resource versus capacity (max units × hours per week), with over-allocated weeks flagged. Self-contained HTML heat map or long-format CSV.
+- New `to-xlsx <file> <out.xlsx>`: Excel workbook (pure Rust, rust_xlsxwriter) with a Tasks sheet (indented names, outline level, collapsible row groups, dates, duration, % complete, predecessors by row number, assigned resources, flags, baseline dates, notes) and a Resources sheet. README explains importing into Smartsheet.
+
 ## v0.4.0 — Compare and variance
 - New `compare <old> <new>`: tasks added/removed and changed name, start, finish, duration, % complete, milestone flag and links, plus project finish movement. Text (default), `--format json` or `--format html` (self-contained), optional `--out`. Tasks are matched by UID, or by Activity ID when both files have them; `--match` overrides.
 - New `variance <file>`: baseline vs current/actual start and finish slip (working days) and duration variance per task, with earned value (BAC, PV, EV, AC, SV, CV, SPI, CPI, EAC) when the file has baseline costs. Table, `--json` or `--csv`; `--status-date` overrides the file's status date.

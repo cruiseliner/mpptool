@@ -1,6 +1,6 @@
 [package]
 name = "mpptool"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Read and analyze Microsoft Project (MPP/MPX/MSPDI) and Primavera P6 (XER/XML) files and export Microsoft Project XML, from the command line"
@@ -35,5 +35,9 @@ libc = "0.2.190"
 mpxj-rs = "0.1.1"
 mpxrust = { version = "0.1.0", optional = true }
 roxmltree = "0.21.1"
+rust_xlsxwriter = { version = "0.99.1", default-features = false, features = ["chrono"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+
+[dev-dependencies]
+zip = { version = "8", default-features = false, features = ["deflate"] }

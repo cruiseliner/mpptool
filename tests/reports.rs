@@ -203,3 +203,57 @@ fn variance_without_baseline() {
     let v: serde_json::Value = serde_json::from_str(&run_ok(&["variance", "--json", &fixture("holiday.xml")])).unwrap();
     assert!(v["earned_value"].is_null());
 }
+
+// ---- v0.5.0: resources-load / to-xlsx ----
+
+fn team_xml(tag: &str) -> String {
+    let out = tmp(&format!("team-{tag}.xml"));
+    run_ok(&["from-csv", &fixture("team.csv"), out.to_str().unwrap()]);
+    out.to_string_lossy().into_owned()
+}
+
+#[test]
+fn resources_load_flags_over_allocation() {
+    let x = team_xml("a");
+    let csv = tmp("load.csv");
+    let out = bin().args(["resources-load", &x, csv.to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("1 over-allocated: Alice"));
+    let c = std::fs::read_to_string(&csv).unwrap();
+    let lines: Vec<&str> = c.lines().collect();
+    assert_eq!(lines[0], "resource_uid,resource,week_start,hours,capacity_hours,over_allocated");
+    assert!(lines.contains(&"1,Alice,2026-05-04,80,40,true"), "{c}");
+    assert!(lines.contains(&"2,Bob,2026-05-04,40,40,false"));
+    assert!(lines.contains(&"1,Alice,2026-05-11,16,40,false"));
+    let html = tmp("load.html");
+    run_ok(&["resources-load", &x, html.to_str().unwrap()]);
+    let h = std::fs::read_to_string(&html).unwrap();
+    assert!(h.starts_with("<!DOCTYPE html>") && h.contains("class=\"over\"") && !h.contains("http"));
+    assert_eq!(h.matches("class=\"over\"").count(), 1);
+}
+
+#[test]
+fn to_xlsx_writes_workbook() {
+    let out = tmp("status.xlsx");
+    run_ok(&["to-xlsx", &fixture("status.xml"), out.to_str().unwrap()]);
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(bytes.starts_with(b"PK"), "xlsx is a zip");
+    // Look inside the zip for the sheet XML and shared strings.
+    let text = unzip_text(&bytes);
+    assert!(text.contains("Tasks") && text.contains("Resources"));
+    assert!(text.contains("3SS +2d"), "predecessor by row number with type and lag");
+    assert!(text.contains("Predecessors") && text.contains("Outline Level"));
+    assert!(text.contains("outlineLevel=\"1\""), "Excel row groups for the hierarchy");
+    assert!(text.contains("indent=\"1\""), "indented task names");
+}
+
+fn unzip_text(bytes: &[u8]) -> String {
+    use std::io::Read;
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut all = String::new();
+    for i in 0..z.len() {
+        let mut f = z.by_index(i).unwrap();
+        f.read_to_string(&mut all).unwrap();
+    }
+    all
+}
