@@ -16,8 +16,10 @@ pub mod read_mpxj;
 #[cfg(feature = "mpxrust")]
 pub mod read_mpxrust;
 pub mod read_p6;
+pub mod resload;
 pub mod variance;
 pub mod workdays;
+pub mod xlsx;
 
 pub use read_mpxj::ReadOptions;
 

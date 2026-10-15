@@ -22,5 +22,10 @@ while IFS= read -r f; do
   timeout 60 "$B" compare --format html -o "$OUT/c.html" "$f" "$f" 2>/dev/null || fail COMPARE_HTML
   timeout 60 "$B" variance --json "$f" 2>/dev/null | jq -e '.tasks' >/dev/null || fail VARIANCE_JSON
   timeout 60 "$B" variance --csv "$f" >/dev/null 2>&1 || fail VARIANCE_CSV
+  timeout 60 "$B" resources-load "$f" "$OUT/l.csv" 2>/dev/null || fail LOAD_CSV
+  timeout 60 "$B" resources-load "$f" "$OUT/l.html" 2>/dev/null || fail LOAD_HTML
+  if timeout 60 "$B" to-xlsx "$f" "$OUT/x.xlsx" 2>/dev/null; then
+    if command -v unzip >/dev/null; then unzip -tq "$OUT/x.xlsx" >/dev/null 2>&1 || fail XLSX_CORRUPT; fi
+  else fail TO_XLSX; fi
 done < <(find "$DIR" \( -name '*.mpp' -o -name '*.xer' -o -name '*.xml' \) | sort)
 echo "feature_files=$files feature_failures=$bad unreadable_skipped=$skipped (details: $OUT/feature-failures.txt)"

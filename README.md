@@ -66,6 +66,8 @@ mpptool compare     <old> <new> [--format text|json|html] [-o out] [--match auto
                                               Diff two versions of a plan
 mpptool variance    <file> [--json|--csv] [--status-date D]
                                               Baseline vs current/actual slip per task, earned value
+mpptool resources-load <file> <out.html|out.csv>  Weekly hours per resource, over-allocation flagged
+mpptool to-xlsx     <file> <out.xlsx>         Excel workbook for Excel / Smartsheet
 
 Global options:
   --engine mpxj|mpxrust   Reader (default mpxj; mpxrust = experimental MPP14-only reader)
@@ -177,6 +179,44 @@ it adds earned value at the status date (from the file or `--status-date`):
 Totals are summed over non-summary tasks. Primavera files carry no baselines (P6 keeps baselines as separate
 projects), so `variance` reports "no baseline" for them; `compare` an older export with the current one instead.
 
+### Resource loading
+
+```sh
+mpptool resources-load plan.mpp load.html   # heat map: resources × weeks, red = above weekly capacity
+mpptool resources-load plan.xer load.csv    # resource_uid,resource,week_start,hours,capacity_hours,over_allocated
+```
+
+Each assignment's work is spread evenly over its Mon–Fri working days and summed per week (weeks start on
+Monday). Weekly capacity is the resource's max units × the plan's hours per week (40 h by default).
+Material and cost resources are left out. Over-allocation is judged per week, not per day.
+
+### Excel and Smartsheet export
+
+```sh
+mpptool to-xlsx plan.mpp plan.xlsx
+```
+
+The workbook has a **Tasks** sheet and a **Resources** sheet. Tasks columns: `Row`, `Task Name` (indented by
+outline level, summary rows in bold), `Outline Level`, `WBS`, `Activity ID`, `Start`, `Finish`,
+`Duration (days)`, `% Complete`, `Predecessors`, `Assigned To`, `Milestone`, `Critical`, `Summary`,
+`Baseline Start`, `Baseline Finish`, `ID`, `Notes`. Predecessors refer to **row numbers** of the sheet
+(row 1 = first task), Smartsheet-style: `3`, `5SS`, `7FS +2d`, `4FF -1d`. In Excel, summary rows are also
+collapsible row groups, the header row is frozen and has filters.
+
+**Importing into Smartsheet**
+
+1. In Smartsheet choose **Import → Microsoft Excel**, pick `plan.xlsx`, sheet **Tasks**, and use row 1 as
+   column headers. Make `Task Name` the primary column.
+2. Open **Project Settings**, turn on dependencies and map *Start Date* → `Start`, *End Date* → `Finish`,
+   *Duration* → `Duration (days)`, *Predecessors* → `Predecessors`, *% Complete* → `% Complete`. Because
+   rows keep their order, the row-number predecessors line up with Smartsheet's row numbers.
+3. Smartsheet's Excel import does **not** rebuild parent/child rows from indentation. Re-create the hierarchy
+   by selecting the rows of each phase and choosing **Indent** (sort or filter by `Outline Level` to find
+   them), or, if you need the hierarchy and links rebuilt automatically, import Microsoft Project XML instead:
+   `mpptool to-xml plan.mpp plan.xml`, then **Import → Microsoft Project** in Smartsheet.
+4. With dependencies on, Smartsheet re-calculates dates from durations and predecessors using its own
+   calendar; set the working days and holidays in Project Settings first so dates match.
+
 ### Primavera P6
 
 ```bash
@@ -248,6 +288,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - Duration months are converted as 20 working days.
 - `check` test 12 (critical path test) is a static continuity check, not DCMA's delay-and-reschedule test.
 - `compare`/`variance` count slip in Mon–Fri working days and ignore holidays; PV assumes work spread evenly over the baseline, not the timephased baseline.
+- `resources-load` spreads work evenly (no work contours, timephased data or per-resource calendars).
 - The readers are young (2026) ports of MPXJ, so expect rough edges on unusual files.
 
 ## Roadmap
@@ -258,7 +299,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - [ ] Holiday-aware `from-csv` (accept a calendar CSV)
 - [x] Gantt charts (`gantt`) and DCMA 14-point check (`check`) — v0.3.0
 - [x] Diff two schedules (`compare`) and baseline variance / earned value (`variance`) — v0.4.0
-- [ ] Resource loading (`resources-load`) and Excel/Smartsheet export (`to-xlsx`) — v0.5.0
+- [x] Resource loading (`resources-load`) and Excel/Smartsheet export (`to-xlsx`) — v0.5.0
 - [ ] Kanban board (`board`) and portfolio dashboard (`portfolio`) — v0.6.0
 - [ ] Primavera: activity codes/UDFs as custom fields, baselines, expenses, cross-project links, writing XER
 - [ ] Code-signed Windows binaries; winget / Homebrew packages

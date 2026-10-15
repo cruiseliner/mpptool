@@ -1,0 +1,8 @@
+name,start,duration_days,predecessors,outline_level,resources,notes
+Sprint 1,,,,1,,
+API,2026-05-04,5,,2,Alice,
+UI,2026-05-04,5,,2,Alice;Bob,Alice is double-booked this week
+Docs,,3,2,2,Bob,
+Sprint 2,,,,1,,
+Release prep,,2,3;4,2,Alice,
+Launch,,0,6,2,,
