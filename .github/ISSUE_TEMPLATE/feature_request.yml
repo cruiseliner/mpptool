@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a new capability or field to support
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to do?
+      description: The task you are trying to accomplish and why the current tool doesn't cover it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Example commands and output, if you have something in mind.

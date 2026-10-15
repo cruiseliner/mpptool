@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+	<SaveVersion>14</SaveVersion>
+	<Name>holiday</Name>
+	<ScheduleFromStart>1</ScheduleFromStart>
+	<StartDate>2026-12-21T08:00:00</StartDate>
+	<CalendarUID>1</CalendarUID>
+	<MinutesPerDay>480</MinutesPerDay>
+	<MinutesPerWeek>2400</MinutesPerWeek>
+	<DaysPerMonth>20</DaysPerMonth>
+	<Calendars>
+		<Calendar>
+			<UID>1</UID>
+			<Name>Standard</Name>
+			<IsBaseCalendar>1</IsBaseCalendar>
+			<BaseCalendarUID>-1</BaseCalendarUID>
+			<WeekDays>
+				<WeekDay><DayType>1</DayType><DayWorking>0</DayWorking></WeekDay>
+				<WeekDay><DayType>2</DayType><DayWorking>1</DayWorking><WorkingTimes><WorkingTime><FromTime>08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime><WorkingTime><FromTime>13:00:00</FromTime><ToTime>17:00:00</ToTime></WorkingTime></WorkingTimes></WeekDay>
+				<WeekDay><DayType>3</DayType><DayWorking>1</DayWorking><WorkingTimes><WorkingTime><FromTime>08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime><WorkingTime><FromTime>13:00:00</FromTime><ToTime>17:00:00</ToTime></WorkingTime></WorkingTimes></WeekDay>
+				<WeekDay><DayType>4</DayType><DayWorking>1</DayWorking><WorkingTimes><WorkingTime><FromTime>08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime><WorkingTime><FromTime>13:00:00</FromTime><ToTime>17:00:00</ToTime></WorkingTime></WorkingTimes></WeekDay>
+				<WeekDay><DayType>5</DayType><DayWorking>1</DayWorking><WorkingTimes><WorkingTime><FromTime>08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime><WorkingTime><FromTime>13:00:00</FromTime><ToTime>17:00:00</ToTime></WorkingTime></WorkingTimes></WeekDay>
+				<WeekDay><DayType>6</DayType><DayWorking>1</DayWorking><WorkingTimes><WorkingTime><FromTime>08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime><WorkingTime><FromTime>13:00:00</FromTime><ToTime>17:00:00</ToTime></WorkingTime></WorkingTimes></WeekDay>
+				<WeekDay><DayType>7</DayType><DayWorking>0</DayWorking></WeekDay>
+			</WeekDays>
+			<Exceptions>
+				<Exception>
+					<EnteredByOccurrences>0</EnteredByOccurrences>
+					<TimePeriod><FromDate>2026-12-25T00:00:00</FromDate><ToDate>2026-12-25T23:59:00</ToDate></TimePeriod>
+					<Occurrences>1</Occurrences>
+					<Name>Christmas</Name>
+					<Type>1</Type>
+					<DayWorking>0</DayWorking>
+				</Exception>
+			</Exceptions>
+		</Calendar>
+	</Calendars>
+	<Tasks>
+		<Task>
+			<UID>1</UID><ID>1</ID><Name>Year-end close</Name><Manual>0</Manual><OutlineLevel>1</OutlineLevel>
+			<Start>2026-12-22T08:00:00</Start><Finish>2026-12-29T17:00:00</Finish><Duration>PT40H0M0S</Duration><DurationFormat>7</DurationFormat>
+			<ConstraintType>4</ConstraintType><ConstraintDate>2026-12-22T08:00:00</ConstraintDate><Deadline>2027-01-08T17:00:00</Deadline>
+			<Notes>Check holidays</Notes>
+		</Task>
+	</Tasks>
+</Project>

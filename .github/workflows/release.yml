@@ -1,0 +1,71 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: windows-x86_64, exe: mpptool.exe }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: linux-x86_64, exe: mpptool }
+          - { os: macos-latest, target: x86_64-apple-darwin, name: macos-x86_64, exe: mpptool }
+          - { os: macos-latest, target: aarch64-apple-darwin, name: macos-aarch64, exe: mpptool }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="mpptool-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir -p "dist/$pkg"
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/$pkg/"
+          cp README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.md "dist/$pkg/"
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "$pkg.zip" "$pkg" >/dev/null
+          else
+            tar czf "$pkg.tar.gz" "$pkg"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.zip *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

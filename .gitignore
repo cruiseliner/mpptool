@@ -1,0 +1,7 @@
+/target
+/corpus
+/dist
+*.xml.tmp
+.DS_Store
+.idea/
+.vscode/

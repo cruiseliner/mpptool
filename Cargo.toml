@@ -1,0 +1,37 @@
+[package]
+name = "mpptool"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Read and analyze Microsoft Project files (MPP/MPX/MSPDI) and export Microsoft Project XML, from the command line"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["microsoft-project", "mpp", "mspdi", "scheduling", "cli"]
+categories = ["command-line-utilities", "parser-implementations"]
+exclude = ["/corpus", "/target", "/.github"]
+
+[features]
+default = ["mpxrust"]
+mpxrust = ["dep:mpxrust"]
+
+[lib]
+name = "mpptool"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mpptool"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+csv = "1.4.0"
+libc = "0.2.190"
+mpxj-rs = "0.1.1"
+mpxrust = { version = "0.1.0", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"

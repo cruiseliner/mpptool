@@ -1,0 +1,33 @@
+name: Bug report
+description: A file fails to read, converts incorrectly, or the tool crashes
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Command you ran, what you expected, what you got (include the full error message).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: mpptool version
+      description: Output of `mpptool --version`
+    validations:
+      required: true
+  - type: input
+    id: project
+    attributes:
+      label: Microsoft Project version / file format
+      description: e.g. Project 2019, .mpp (or "summary" output's "File format" line)
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux, Other]
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample file
+      description: If you can, attach a small file that reproduces the problem. Please remove confidential data first — files attached here are public.
