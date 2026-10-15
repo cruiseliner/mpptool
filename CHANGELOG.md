@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.0 — Compare and variance
+- New `compare <old> <new>`: tasks added/removed and changed name, start, finish, duration, % complete, milestone flag and links, plus project finish movement. Text (default), `--format json` or `--format html` (self-contained), optional `--out`. Tasks are matched by UID, or by Activity ID when both files have them; `--match` overrides.
+- New `variance <file>`: baseline vs current/actual start and finish slip (working days) and duration variance per task, with earned value (BAC, PV, EV, AC, SV, CV, SPI, CPI, EAC) when the file has baseline costs. Table, `--json` or `--csv`; `--status-date` overrides the file's status date.
+- `to-xml` now also writes the project status date and baseline duration and cost, so they survive conversion. `tasks` output is unchanged.
+
 ## v0.3.0 — Gantt charts and schedule health check
 - New `gantt <file> <out.html|out.svg>`: a self-contained, offline HTML page (inline SVG, no external assets) or a plain SVG. Shows WBS/outline rows, bars with % complete fill, summary brackets, milestone diamonds, link arrows, the critical path in red, a today line, baseline ghost bars, and a time scale that adapts across days/weeks/months/quarters. Options: `--critical-only`, `--from`, `--to`, `--title`, `--today`.
 - New `check <file> [--json]`: the DCMA 14-point schedule assessment, with pass/fail against the standard thresholds, counts, percentages and offending task IDs. Checks without the data they need (status date, baseline, float, resources) are reported as skipped. `--status-date` overrides the file's status date; `--fail-on-error` exits 1 when a check fails.

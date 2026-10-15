@@ -112,6 +112,47 @@ enum Cmd {
         #[arg(long)]
         fail_on_error: bool,
     },
+    /// Compare two versions of a plan: tasks added/removed, changed dates, durations, links, % complete
+    Compare {
+        old: PathBuf,
+        new: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
+        format: ReportFormat,
+        /// Write the report to a file instead of stdout
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// How to match tasks between the two files
+        #[arg(long = "match", value_enum, default_value_t = MatchArg::Auto)]
+        match_by: MatchArg,
+    },
+    /// Baseline vs current/actual slip per task, with earned value (PV, EV, AC, SPI, CPI, SV, CV) when costs exist
+    Variance {
+        file: PathBuf,
+        #[arg(long, conflicts_with = "csv")]
+        json: bool,
+        #[arg(long)]
+        csv: bool,
+        /// Status date for earned value (YYYY-MM-DD); default: the file's status/data date
+        #[arg(long, value_parser = parse_date)]
+        status_date: Option<chrono::NaiveDate>,
+    },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum ReportFormat {
+    Text,
+    Json,
+    Html,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum MatchArg {
+    /// Activity ID when both files have them, else unique ID
+    Auto,
+    Uid,
+    ActivityId,
+    Name,
 }
 
 fn parse_date(s: &str) -> Result<chrono::NaiveDate, String> {
@@ -298,6 +339,150 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
+        Cmd::Compare { old, new, format, out, match_by } => {
+            let (a, b) = (read(&old)?, read(&new)?);
+            let by = match match_by {
+                MatchArg::Auto => mpptool::compare::MatchBy::Auto,
+                MatchArg::Uid => mpptool::compare::MatchBy::Uid,
+                MatchArg::ActivityId => mpptool::compare::MatchBy::ActivityId,
+                MatchArg::Name => mpptool::compare::MatchBy::Name,
+            };
+            let c = mpptool::compare::compare(&a, &b, by);
+            let doc = match format {
+                ReportFormat::Text => mpptool::compare::to_text(&c),
+                ReportFormat::Json => serde_json::to_string_pretty(&c).map_err(|e| e.to_string())? + "\n",
+                ReportFormat::Html => mpptool::compare::to_html(&c, &old.display().to_string(), &new.display().to_string()),
+            };
+            match out {
+                Some(o) => {
+                    write_file(&o, &doc)?;
+                    eprintln!("wrote {} ({} added, {} removed, {} changed)", o.display(), c.added.len(), c.removed.len(), c.changed.len());
+                }
+                None => print!("{doc}"),
+            }
+            Ok(())
+        }
+        Cmd::Variance { file, json: j, csv, status_date } => {
+            let p = read(&file)?;
+            let v = mpptool::variance::variance(&p, status_date.and_then(|d| d.and_hms_opt(17, 0, 0)));
+            if j {
+                json(&v)
+            } else if csv {
+                print_variance_csv(&v)
+            } else {
+                print_variance(&v);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn money2(v: Option<f64>) -> String {
+    v.map(|v| format!("{v:.2}")).unwrap_or_default()
+}
+
+fn print_variance_csv(v: &mpptool::variance::VarianceReport) -> Result<(), String> {
+    let mut w = csv::Writer::from_writer(std::io::stdout());
+    let h = [
+        "id",
+        "uid",
+        "activity_id",
+        "name",
+        "outline_level",
+        "summary",
+        "baseline_start",
+        "baseline_finish",
+        "start",
+        "finish",
+        "start_slip_days",
+        "finish_slip_days",
+        "duration_variance_hours",
+        "percent_complete",
+        "bac",
+        "pv",
+        "ev",
+        "ac",
+    ];
+    w.write_record(h).map_err(|e| e.to_string())?;
+    for t in &v.tasks {
+        let o = |x: Option<i64>| x.map(|x| x.to_string()).unwrap_or_default();
+        w.write_record([
+            opt_i(t.id),
+            t.uid.to_string(),
+            t.activity_id.clone().unwrap_or_default(),
+            t.name.clone(),
+            t.outline_level.to_string(),
+            t.summary.to_string(),
+            fmt_dt(&t.baseline_start),
+            fmt_dt(&t.baseline_finish),
+            fmt_dt(&t.start),
+            fmt_dt(&t.finish),
+            o(t.start_slip_days),
+            o(t.finish_slip_days),
+            t.duration_variance_hours.map(|x| x.to_string()).unwrap_or_default(),
+            t.percent_complete.to_string(),
+            money2(t.bac),
+            money2(t.pv),
+            money2(t.ev),
+            money2(t.ac),
+        ])
+        .map_err(|e| e.to_string())?;
+    }
+    w.flush().map_err(|e| e.to_string())
+}
+
+fn print_variance(v: &mpptool::variance::VarianceReport) {
+    println!(
+        "Baseline variance: {} tasks with a baseline, {} finishing late (max {} wd), project finish slip {} working days, status date {}",
+        v.tasks_with_baseline,
+        v.late_finishes,
+        v.max_finish_slip_days.map(|d| format!("{d:+}")).unwrap_or_else(|| "–".into()),
+        v.project_finish_slip_days.map(|d| format!("{d:+}")).unwrap_or_else(|| "–".into()),
+        v.status_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "none".into())
+    );
+    if v.tasks.is_empty() {
+        println!("(the plan has no baseline)");
+        return;
+    }
+    println!(
+        "{:>5} {:<34} {:<10} {:<10} {:>6} {:>6} {:>5} {:>11} {:>11} {:>11}",
+        "ID", "Name", "BL finish", "Finish", "Start±", "Fin±", "%", "PV", "EV", "AC"
+    );
+    for t in &v.tasks {
+        let o = |x: Option<i64>| x.map(|x| format!("{x:+}")).unwrap_or_default();
+        let d = |x: Option<chrono::NaiveDateTime>| x.map(|x| x.format("%Y-%m-%d").to_string()).unwrap_or_default();
+        let indent = "  ".repeat((t.outline_level - 1).clamp(0, 6) as usize);
+        println!(
+            "{:>5} {:<34} {:<10} {:<10} {:>6} {:>6} {:>5.0} {:>11} {:>11} {:>11}",
+            opt_i(t.id),
+            trunc(&format!("{indent}{}", t.name), 34),
+            d(t.baseline_finish),
+            d(t.finish),
+            o(t.start_slip_days),
+            o(t.finish_slip_days),
+            t.percent_complete,
+            money2(t.pv),
+            money2(t.ev),
+            money2(t.ac)
+        );
+    }
+    match &v.earned_value {
+        Some(e) => {
+            let r = |x: Option<f64>| x.map(|x| format!("{x:.2}")).unwrap_or_else(|| "–".into());
+            println!(
+                "Earned value: BAC {:.2}  PV {:.2}  EV {:.2}  AC {:.2}  SV {:.2}  CV {:.2}  SPI {}  CPI {}  EAC {}",
+                e.bac,
+                e.pv,
+                e.ev,
+                e.ac,
+                e.sv,
+                e.cv,
+                r(e.spi),
+                r(e.cpi),
+                r(e.eac)
+            );
+        }
+        None => println!("Earned value: not available (no baseline cost in the file)"),
     }
 }
 

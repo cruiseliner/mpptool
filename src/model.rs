@@ -54,6 +54,12 @@ pub struct TaskRec {
     pub actual_cost: Option<f64>,
     /// Task calendar UID, if the task has its own calendar.
     pub calendar_uid: Option<i32>,
+    /// Baseline duration in working hours (not part of the `tasks` JSON output).
+    #[serde(skip)]
+    pub baseline_duration_hours: Option<f64>,
+    /// Baseline cost (BAC) (not part of the `tasks` JSON output).
+    #[serde(skip)]
+    pub baseline_cost: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]

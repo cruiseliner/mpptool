@@ -130,3 +130,76 @@ fn check_works_on_primavera() {
     let out = tmp("p6.svg");
     run_ok(&["gantt", &fixture("sample-p6.xml"), out.to_str().unwrap()]);
 }
+
+// ---- v0.4.0: compare / variance ----
+
+#[test]
+fn compare_text_json_html() {
+    let (a, b) = (fixture("status.xml"), fixture("status-v2.xml"));
+    let t = run_ok(&["compare", &a, &b]);
+    assert!(t.contains("added 1, removed 0, changed 3, unchanged 4"), "{t}");
+    assert!(t.contains("(+2 working days)"));
+    assert!(t.contains("predecessors: removed [6 FS] added [8 FS]"));
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["compare", "--format", "json", &a, &b])).unwrap();
+    assert_eq!(v["added"][0]["name"], "Snagging");
+    assert_eq!(v["finish_slip_days"], 2);
+    let install = v["changed"].as_array().unwrap().iter().find(|c| c["name"] == "Install").unwrap();
+    let fields: Vec<&str> = install["changes"].as_array().unwrap().iter().map(|c| c["field"].as_str().unwrap()).collect();
+    assert_eq!(fields, ["finish", "duration_hours"]);
+    // Reverse direction: the task is removed.
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["compare", "--format", "json", &b, &a])).unwrap();
+    assert_eq!(v["removed"][0]["name"], "Snagging");
+    let out = tmp("cmp.html");
+    run_ok(&["compare", "--format", "html", "--out", out.to_str().unwrap(), &a, &b]);
+    let h = std::fs::read_to_string(&out).unwrap();
+    assert!(h.starts_with("<!DOCTYPE html>") && h.contains("Handover &amp; sign-off") && !h.contains("http"));
+    // Identical files: nothing changed.
+    let t = run_ok(&["compare", &a, &a]);
+    assert!(t.contains("added 0, removed 0, changed 0, unchanged 7"));
+}
+
+#[test]
+fn compare_matches_primavera_by_activity_id() {
+    let x = fixture("multi-project.xer");
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["compare", "--format", "json", &x, &x])).unwrap();
+    assert_eq!(v["matched_by"], "activity_id");
+    assert_eq!(v["changed"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn variance_and_earned_value() {
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["variance", "--json", &fixture("status.xml")])).unwrap();
+    let ev = &v["earned_value"];
+    assert_eq!(ev["bac"], 26600.0);
+    assert_eq!(ev["ev"], 8000.0); // 1600 + 4000 + 30% of 8000
+    assert_eq!(ev["ac"], 8900.0);
+    assert_eq!(ev["pv"], 9500.0); // 1600 + 4000 + 3/10 of 8000 + 5/10 of 3000
+    assert_eq!(ev["cv"], -900.0);
+    assert_eq!(ev["sv"], -1500.0);
+    assert!((ev["spi"].as_f64().unwrap() - 8000.0 / 9500.0).abs() < 1e-9);
+    assert!((ev["cpi"].as_f64().unwrap() - 8000.0 / 8900.0).abs() < 1e-9);
+    let survey = v["tasks"].as_array().unwrap().iter().find(|t| t["name"] == "Survey").unwrap();
+    assert_eq!(survey["finish_slip_days"], 1);
+    assert_eq!(survey["duration_variance_hours"], 8.0);
+    assert_eq!(v["project_finish_slip_days"], 1);
+    let csv = run_ok(&["variance", "--csv", &fixture("status.xml")]);
+    assert!(csv.lines().next().unwrap().starts_with("id,uid,activity_id,name"));
+    assert_eq!(csv.lines().count(), 8);
+    // Status date override changes PV only.
+    let v2: serde_json::Value =
+        serde_json::from_str(&run_ok(&["variance", "--json", "--status-date", "2026-04-30", &fixture("status.xml")])).unwrap();
+    assert_eq!(v2["earned_value"]["pv"], 26600.0);
+    // Baseline cost survives to-xml.
+    let x = tmp("status-rt.xml");
+    run_ok(&["to-xml", &fixture("status.xml"), x.to_str().unwrap()]);
+    let v3: serde_json::Value = serde_json::from_str(&run_ok(&["variance", "--json", x.to_str().unwrap()])).unwrap();
+    assert_eq!(v3["earned_value"], v["earned_value"]);
+}
+
+#[test]
+fn variance_without_baseline() {
+    let t = run_ok(&["variance", &fixture("holiday.xml")]);
+    assert!(t.contains("no baseline"));
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["variance", "--json", &fixture("holiday.xml")])).unwrap();
+    assert!(v["earned_value"].is_null());
+}
