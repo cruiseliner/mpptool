@@ -1,0 +1,6 @@
+id,name,business_value,time_criticality,risk_reduction,job_size,cost,cod_per_week,duration_weeks
+P1,Warehouse fit-out phase 2,20,13,5,13,1200000,40000,16
+P2,Dock door replacement,8,20,8,3,150000,25000,4
+P3,Office HVAC upgrade,5,3,2,5,300000,4000,6
+P4,Yard lighting LED retrofit,3,2,1,1,40000,1500,1
+P5,Fire sprinkler code upgrade,8,13,13,5,250000,20000,6

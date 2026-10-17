@@ -42,4 +42,6 @@ scripts/test-corpus-features.sh                    # report commands over every 
 - `mpxj-rs` is a method-by-method port of Java MPXJ. Its API names mirror Java (`get_unique_id`, `get_predecessors`), and its source is in `~/.cargo/registry/src/*/mpxj-rs-*/src`.
 - Task UID 0 is the project summary task. Rows with no name and no dates are "null tasks" (blank rows) and are written as `<IsNull>1</IsNull>`.
 - Visible task IDs (`id`) can change when rows are reordered. UIDs are stable, and MSPDI links use UIDs.
+- `risk` event sampling order is part of reproducibility: per event, one uniform draw, then (if fired) the impact, then the cost. Extra scenario passes (no events, threats only) reuse the sampled durations and draw nothing. A threat-only risk file must give the same results as v0.10.1 (smoke check).
+- `lps`, `takt`, `wsjf`, `forecast` read CSV through `lps::Table` (lower-case headers, `#` comments, trimmed fields). Fixtures for them live in `tests/fixtures/smoke/`.
 - Good first tasks are listed under "Roadmap" in README.md.

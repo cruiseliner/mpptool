@@ -38,6 +38,14 @@ pub struct RiskOptions {
     pub events: Vec<RiskEvent>,
     /// Overrides/additions to [`CLASSES`]: class → (optimistic factor, pessimistic factor).
     pub classes: HashMap<String, (f64, f64)>,
+    /// Point cost estimate (currency) for a total-cost / joint cost-schedule confidence (JCL) analysis.
+    pub base_cost: Option<f64>,
+    /// Time-dependent cost per working day (general conditions, field overhead, standby): each run's cost moves by
+    /// `cost_per_day × (finish − deterministic finish)` in working days.
+    pub cost_per_day: Option<f64>,
+    /// Target finish date and budget for the JCL (default: the P80 date and P80 cost).
+    pub target_date: Option<NaiveDate>,
+    pub target_cost: Option<f64>,
 }
 
 impl Default for RiskOptions {
@@ -50,25 +58,53 @@ impl Default for RiskOptions {
             status_date: None,
             events: vec![],
             classes: CLASSES.iter().map(|c| (c.0.to_string(), (c.1, c.2))).collect(),
+            base_cost: None,
+            cost_per_day: None,
+            target_date: None,
+            target_cost: None,
         }
     }
 }
 
-/// A discrete risk (RAID) event.
+/// Whether a risk event delays (threat) or saves time/cost (opportunity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EventKind {
+    #[default]
+    Threat,
+    Opportunity,
+}
+
+impl EventKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EventKind::Threat => "threat",
+            EventKind::Opportunity => "opportunity",
+        }
+    }
+}
+
+/// A discrete risk (RAID) event: a threat (adds time) or an opportunity (saves time).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RiskEvent {
     pub id: String,
     pub name: String,
+    /// Threat or opportunity (CSV `type` column, or inferred from the sign of the impacts).
+    #[serde(rename = "type")]
+    pub kind: EventKind,
     /// 0–1.
     pub probability: f64,
-    /// Impact in working days (min, most likely, max), added to each linked task when the event fires.
+    /// Signed impact in working days (min <= most likely <= max), added to each linked task when the event fires.
+    /// Opportunities have impacts <= 0 (time saved); a task never goes below 0 days and `fixed`-class tasks are never
+    /// shortened by an opportunity.
     pub min_days: f64,
     pub likely_days: f64,
     pub max_days: f64,
     /// Linked tasks: activity IDs or 1-based row numbers (`#3` forces a row number). A summary row applies to all
     /// its leaf tasks.
     pub tasks: Vec<String>,
-    /// Optional cost impact (min, most likely, max) in currency units, sampled when the event fires.
+    /// Optional signed cost impact (min, most likely, max) in currency units, sampled when the event fires
+    /// (negative = saving).
     pub cost: Option<(f64, f64, f64)>,
 }
 
@@ -306,8 +342,13 @@ impl SidecarCoverage {
 }
 
 /// Parse a RAID risk CSV: `id, name, probability, min_days, likely_days, max_days, tasks` (header required,
-/// case-insensitive; `probability` as 0.3 or 30%; `tasks` = row numbers separated by `;`). Short forms `p`, `min`,
-/// `likely`/`ml`, `max` are accepted.
+/// case-insensitive; `probability` as 0.3 or 30%; `tasks` = activity IDs or row numbers separated by `;`). Short forms
+/// `p`, `min`, `likely`/`ml`, `max` are accepted. Optional `cost_min, cost_likely, cost_max`.
+///
+/// Opportunities: an optional `type` (or `kind`) column says `threat` or `opportunity` (also `t`/`o`, `risk`/`opp`).
+/// An opportunity's impacts may be written as positive days saved (`1,3,5`) or as negative days (`-5,-3,-1`); both mean
+/// "saves 1 to 5 days, most likely 3". Without a `type` column, negative impacts mean an opportunity. Its cost columns
+/// are a saving the same way. Impacts that straddle zero are rejected (split them into a threat and an opportunity).
 pub fn parse_events(text: &str) -> Result<Vec<RiskEvent>, String> {
     let mut rdr = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::All).comment(Some(b'#')).from_reader(text.as_bytes());
     let hdr: Vec<String> = rdr.headers().map_err(|e| format!("risk CSV header: {e}"))?.iter().map(|h| h.to_lowercase()).collect();
@@ -319,6 +360,7 @@ pub fn parse_events(text: &str) -> Result<Vec<RiskEvent>, String> {
     let cmax = cmax.ok_or("risk CSV needs a 'max_days' column")?;
     let ct = col(&["tasks", "task_ids", "linked_tasks"]).ok_or("risk CSV needs a 'tasks' column")?;
     let (ccmin, ccml, ccmax) = (col(&["cost_min"]), col(&["cost_likely", "cost_ml"]), col(&["cost_max"]));
+    let cty = col(&["type", "kind", "risk_type"]);
     let mut out = vec![];
     for (k, rec) in rdr.records().enumerate() {
         let line = k + 2;
@@ -332,9 +374,10 @@ pub fn parse_events(text: &str) -> Result<Vec<RiskEvent>, String> {
                 "" => Ok(None),
                 v => v
                     .trim_end_matches(['d', 'D'])
+                    .trim()
                     .parse::<f64>()
                     .ok()
-                    .filter(|x| x.is_finite() && *x >= 0.0)
+                    .filter(|x| x.is_finite())
                     .map(Some)
                     .ok_or(format!("risk line {line}: bad {what} '{v}'")),
             }
@@ -347,33 +390,79 @@ pub fn parse_events(text: &str) -> Result<Vec<RiskEvent>, String> {
         .ok()
         .filter(|p| (0.0..=1.0).contains(p))
         .ok_or(format!("risk line {line}: bad probability '{pv}' (0-1 or 0-100%)"))?;
-        let max_days = num(Some(cmax), "max_days")?.ok_or(format!("risk line {line}: missing max_days"))?;
-        let likely_days = num(cml, "likely_days")?.unwrap_or(max_days);
-        let min_days = num(cmin, "min_days")?.unwrap_or(likely_days.min(max_days));
-        if !(min_days <= likely_days && likely_days <= max_days) {
-            return Err(format!("risk line {line}: need min <= likely <= max"));
+        let declared = match g(cty).to_lowercase().as_str() {
+            "" => None,
+            "threat" | "t" | "risk" | "negative" | "downside" => Some(EventKind::Threat),
+            "opportunity" | "o" | "opp" | "positive" | "upside" => Some(EventKind::Opportunity),
+            v => return Err(format!("risk line {line}: bad type '{v}' (threat or opportunity)")),
+        };
+        let mx = num(Some(cmax), "max_days")?.ok_or(format!("risk line {line}: missing max_days"))?;
+        let (ml, mn) = (num(cml, "likely_days")?, num(cmin, "min_days")?);
+        let vals = [mn, ml, Some(mx)];
+        let any_neg = vals.iter().flatten().any(|v| *v < 0.0);
+        let any_pos = vals.iter().flatten().any(|v| *v > 0.0);
+        if any_neg && any_pos {
+            return Err(format!("risk line {line}: impacts straddle zero; split into a threat and an opportunity"));
         }
+        let kind = declared.unwrap_or(if any_neg { EventKind::Opportunity } else { EventKind::Threat });
+        if kind == EventKind::Threat && any_neg {
+            return Err(format!("risk line {line}: a threat needs impacts >= 0 (negative days are an opportunity)"));
+        }
+        // Signed magnitudes: an opportunity written as positive days saved is negated.
+        let flip = |v: f64| if kind == EventKind::Opportunity && !any_neg { -v } else { v };
+        let (mx, ml, mn) = (flip(mx), ml.map(flip), mn.map(flip));
+        // Order: threats min<=likely<=max; for opportunities the "max" column is the largest saving.
+        let (min_days, likely_days, max_days) = if kind == EventKind::Threat {
+            let ml = ml.unwrap_or(mx);
+            let mn = mn.unwrap_or(ml.min(mx));
+            if !(mn <= ml && ml <= mx) {
+                return Err(format!("risk line {line}: need min <= likely <= max"));
+            }
+            (mn, ml, mx)
+        } else {
+            // Most negative = biggest saving; accept min/max columns written either way round.
+            let ml = ml.unwrap_or(mx);
+            let mn = mn.unwrap_or(ml);
+            let lo = mn.min(mx);
+            let hi = mn.max(mx);
+            if !(lo <= ml && ml <= hi) {
+                return Err(format!("risk line {line}: likely saving must lie between min and max"));
+            }
+            (lo, ml, hi)
+        };
         let tasks = g(Some(ct)).split([';', ',', ' ']).filter(|t| !t.is_empty()).map(|t| t.trim().to_string()).collect::<Vec<_>>();
         if tasks.is_empty() {
             return Err(format!("risk line {line}: no linked tasks"));
         }
-        let cmx = num(ccmax, "cost_max")?;
-        let cost = match cmx {
-            None if g(ccmin).is_empty() && g(ccml).is_empty() => None,
-            None => return Err(format!("risk line {line}: cost_min/cost_likely need cost_max")),
-            Some(mx) => {
-                let ml = num(ccml, "cost_likely")?.unwrap_or(mx);
-                let mn = num(ccmin, "cost_min")?.unwrap_or(ml.min(mx));
-                if !(mn <= ml && ml <= mx) {
+        let cvals = [num(ccmin, "cost_min")?, num(ccml, "cost_likely")?, num(ccmax, "cost_max")?];
+        let cost = match cvals {
+            [None, None, None] => None,
+            [_, _, None] => return Err(format!("risk line {line}: cost_min/cost_likely need cost_max")),
+            [cmn, cml, Some(cmx)] => {
+                let cneg = cvals.iter().flatten().any(|v| *v < 0.0);
+                let cpos = cvals.iter().flatten().any(|v| *v > 0.0);
+                if cneg && cpos {
+                    return Err(format!("risk line {line}: cost impacts straddle zero"));
+                }
+                if kind == EventKind::Threat && cneg {
+                    return Err(format!("risk line {line}: a threat needs costs >= 0 (negative cost is an opportunity)"));
+                }
+                let cf = |v: f64| if kind == EventKind::Opportunity && !cneg { -v } else { v };
+                let (cmx, cml, cmn) = (cf(cmx), cml.map(cf), cmn.map(cf));
+                let ml = cml.unwrap_or(cmx);
+                let mn = cmn.unwrap_or(if kind == EventKind::Threat { ml.min(cmx) } else { ml });
+                let (lo, hi) = if kind == EventKind::Threat { (mn, cmx) } else { (mn.min(cmx), mn.max(cmx)) };
+                if !(lo <= ml && ml <= hi) {
                     return Err(format!("risk line {line}: need cost_min <= cost_likely <= cost_max"));
                 }
-                Some((mn, ml, mx))
+                Some((lo, ml, hi))
             }
         };
         let id = Some(g(ci)).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("R{}", k + 1));
         out.push(RiskEvent {
             name: Some(g(cn)).filter(|s| !s.is_empty()).unwrap_or_else(|| id.clone()),
             id,
+            kind,
             probability,
             min_days,
             likely_days,
@@ -433,9 +522,81 @@ pub struct EventRisk {
     pub hit_rate: f64,
     /// Mean project finish (working days) when the event fired minus when it did not.
     pub mean_finish_impact_days: Option<f64>,
-    /// Expected cost over all runs (probability x mean sampled cost); only with cost columns.
+    /// Expected cost over all runs (probability x mean sampled cost); only with cost columns. Negative = saving.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_cost: Option<f64>,
+    /// `threat` or `opportunity`.
+    #[serde(rename = "type")]
+    pub kind: EventKind,
+    /// Pearson correlation of the event's sampled impact magnitude (days added or saved; 0 when it does not fire)
+    /// with the project finish: positive for a threat that drives the finish, negative for an opportunity that pulls
+    /// it in.
+    pub sensitivity: f64,
+    /// Mean sampled impact in working days when it fires (negative = time saved).
+    pub mean_sampled_days: Option<f64>,
+    /// Opportunities only: linked `fixed`-class tasks that the saving is not applied to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_tasks_protected: Option<usize>,
+}
+
+/// Finish distribution of one event scenario (same sampled durations; see [`EventEffect`]).
+#[derive(Debug, Serialize)]
+pub struct Scenario {
+    pub mean_working_days: f64,
+    pub p50_working_days: f64,
+    pub p80_working_days: f64,
+    pub p50_finish: NaiveDateTime,
+    pub p80_finish: NaiveDateTime,
+}
+
+/// Threat vs opportunity effect, measured with common random numbers: every run's sampled task durations are
+/// scheduled three times (no events, threats only, all events), so the differences are not sampling noise.
+#[derive(Debug, Serialize)]
+pub struct EventEffect {
+    pub threats: usize,
+    pub opportunities: usize,
+    pub uncertainty_only: Scenario,
+    pub with_threats: Scenario,
+    pub with_all_events: Scenario,
+    /// P80 working days added by threats (with_threats − uncertainty_only).
+    pub threat_p80_days: f64,
+    /// P80 working days changed by opportunities (with_all_events − with_threats; negative = earlier).
+    pub opportunity_p80_days: f64,
+    /// Net P80 effect of all events.
+    pub net_p80_days: f64,
+    pub threat_mean_days: f64,
+    pub opportunity_mean_days: f64,
+    /// Expected threat cost and opportunity saving (negative) per run; only with cost columns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threat_cost_mean: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opportunity_cost_mean: Option<f64>,
+}
+
+/// Total cost = base cost + cost per day × (finish − deterministic finish) + event costs, per run, and the joint
+/// cost-and-schedule confidence level (JCL): the share of runs that meet both a date and a budget.
+#[derive(Debug, Serialize)]
+pub struct TotalCost {
+    pub base_cost: f64,
+    pub cost_per_day: f64,
+    pub mean: f64,
+    pub p50: f64,
+    pub p70: f64,
+    pub p80: f64,
+    pub p90: f64,
+    /// Share of runs within both the Pxx date and the Pxx total cost (normally below xx%; ties at the percentile in
+    /// discrete toy models can push it higher).
+    pub joint_p50: f64,
+    pub joint_p70: f64,
+    pub joint_p80: f64,
+    /// Date and budget the JCL below is measured against (the targets given, else the P80 date and P80 cost).
+    pub target_finish: NaiveDateTime,
+    pub target_cost: f64,
+    /// Joint confidence of meeting both targets.
+    pub jcl: f64,
+    /// Share of runs meeting the target date, and the target cost (each alone).
+    pub p_target_date: f64,
+    pub p_target_cost: f64,
 }
 
 /// Risk-cost distribution (sum of fired event costs per run). Duration-driven cost (overtime, extended general
@@ -472,6 +633,12 @@ pub struct RiskReport {
     /// Uncertainty sidecar coverage (only with --uncertainty).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uncertainty_coverage: Option<SidecarCoverage>,
+    /// Threat vs opportunity effect (only with risk events).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_effect: Option<EventEffect>,
+    /// Total-cost distribution and joint cost/schedule confidence (only with `base_cost`/`cost_per_day`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost: Option<TotalCost>,
 }
 
 /// xoshiro256** seeded through splitmix64: small, fast, and reproducible across platforms and versions.
@@ -646,31 +813,79 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
     let ne = opts.events.len();
     let (mut hits, mut fin_hit) = (vec![0usize; ne], vec![0.0; ne]);
     let has_cost = opts.events.iter().any(|e| e.cost.is_some());
+    let has_opp = opts.events.iter().any(|e| e.kind == EventKind::Opportunity);
     let mut ev_cost = vec![0.0; ne];
     let mut costs: Vec<f64> = Vec::with_capacity(if has_cost { opts.runs } else { 0 });
+    // Per-event sampled impact magnitude (0 when it does not fire) vs finish, for event sensitivity.
+    let (mut ex, mut exx, mut exy) = (vec![0.0; ne], vec![0.0; ne], vec![0.0; ne]);
+    // Fixed-class tasks are never shortened by an opportunity.
+    let protected: Vec<bool> = class.iter().map(|c| c == "fixed").collect();
+    let protected_count: Vec<usize> = (0..ne)
+        .map(|k| if opts.events[k].kind == EventKind::Opportunity { targets[k].iter().filter(|&&i| protected[i]).count() } else { 0 })
+        .collect();
+    // Common random numbers: the same sampled durations are scheduled without events, with threats only and with all
+    // events, so the threat and opportunity effects are measured without sampling noise.
+    let (mut fin_base, mut fin_threat): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+    let (mut base_dur, mut imp_k) = (vec![0.0; n], vec![0.0; ne]);
+    let (mut cost_threat, mut cost_opp) = (0.0, 0.0);
     for _ in 0..opts.runs {
         for i in 0..n {
             dur[i] = if leaf(i) { pert(&mut rng, est[i].0, est[i].1, est[i].2) * mpd } else { 0.0 };
         }
+        if ne > 0 {
+            base_dur.copy_from_slice(&dur);
+        }
         let mut fired = vec![false; ne];
         let mut run_cost = 0.0;
         for (k, e) in opts.events.iter().enumerate() {
+            imp_k[k] = 0.0;
             if rng.uniform() < e.probability {
                 fired[k] = true;
-                let imp = pert(&mut rng, e.min_days, e.likely_days, e.max_days) * mpd;
-                for &i in &targets[k] {
-                    dur[i] += imp;
+                let imp = pert(&mut rng, e.min_days, e.likely_days, e.max_days);
+                imp_k[k] = imp;
+                if e.kind == EventKind::Threat {
+                    for &i in &targets[k] {
+                        dur[i] += imp * mpd;
+                    }
                 }
                 if let Some((a, b, c)) = e.cost {
                     let x = pert(&mut rng, a, b, c);
                     run_cost += x;
                     ev_cost[k] += x;
+                    if e.kind == EventKind::Threat {
+                        cost_threat += x;
+                    } else {
+                        cost_opp += x;
+                    }
+                }
+            }
+        }
+        if ne > 0 {
+            let (_, efb) = net.forward(&base_dur);
+            fin_base.push(net.topo.iter().map(|&i| efb[i]).fold(0.0, f64::max));
+            if has_opp {
+                let (_, eft) = net.forward(&dur);
+                fin_threat.push(net.topo.iter().map(|&i| eft[i]).fold(0.0, f64::max));
+                for (k, e) in opts.events.iter().enumerate() {
+                    if fired[k] && e.kind == EventKind::Opportunity {
+                        for &i in &targets[k] {
+                            if !protected[i] {
+                                dur[i] += imp_k[k] * mpd;
+                            }
+                        }
+                    }
+                }
+                for d in dur.iter_mut() {
+                    *d = d.max(0.0);
                 }
             }
         }
         let (es, ef) = net.forward(&dur);
         let f = net.topo.iter().map(|&i| ef[i]).fold(0.0, f64::max);
         finishes.push(f);
+        if ne > 0 && !has_opp {
+            fin_threat.push(f);
+        }
         if has_cost {
             costs.push(run_cost);
         }
@@ -690,6 +905,10 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
                 hits[k] += 1;
                 fin_hit[k] += fd;
             }
+            let m = imp_k[k].abs();
+            ex[k] += m;
+            exx[k] += m * m;
+            exy[k] += m * fd;
         }
         driving_path(&net, &dur, &es, &ef, &mut path);
         for &i in &path {
@@ -698,12 +917,13 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
     }
     let runs = opts.runs as f64;
     let total_fin: f64 = sy;
-    let corr = |i: usize| {
-        let cov = sxy[i] / runs - sx[i] / runs * sy / runs;
-        let vx = sxx[i] / runs - (sx[i] / runs).powi(2);
+    let pearson = |s_x: f64, s_xx: f64, s_xy: f64| {
+        let cov = s_xy / runs - s_x / runs * sy / runs;
+        let vx = s_xx / runs - (s_x / runs).powi(2);
         let vy = syy / runs - (sy / runs).powi(2);
         if vx > 1e-12 && vy > 1e-12 { (cov / (vx * vy).sqrt()).clamp(-1.0, 1.0) } else { 0.0 }
     };
+    let corr = |i: usize| pearson(sx[i], sxx[i], sxy[i]);
     let mut events: Vec<EventRisk> = opts
         .events
         .iter()
@@ -714,14 +934,51 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
             EventRisk {
                 id: e.id.clone(),
                 name: e.name.clone(),
+                kind: e.kind,
                 probability: e.probability,
                 hit_rate: h / runs,
                 mean_finish_impact_days: impact,
+                sensitivity: pearson(ex[k], exx[k], exy[k]),
+                mean_sampled_days: (hits[k] > 0).then(|| ex[k] / h * if e.kind == EventKind::Opportunity { -1.0 } else { 1.0 }),
                 expected_cost: e.cost.map(|_| ev_cost[k] / runs),
+                fixed_tasks_protected: (e.kind == EventKind::Opportunity).then_some(protected_count[k]),
             }
         })
         .collect();
     events.sort_by(|a, b| b.mean_finish_impact_days.unwrap_or(0.0).total_cmp(&a.mean_finish_impact_days.unwrap_or(0.0)));
+    let tl0 = &mut net.timeline;
+    let event_effect = (ne > 0).then(|| {
+        let scen = |v: &[f64], tl: &mut crate::calendar::Timeline| {
+            let mut s = v.to_vec();
+            s.sort_by(f64::total_cmp);
+            let q = |x: f64| s[((x * runs) as usize).min(s.len() - 1)];
+            Scenario {
+                mean_working_days: s.iter().sum::<f64>() / runs / mpd,
+                p50_working_days: q(0.5) / mpd,
+                p80_working_days: q(0.8) / mpd,
+                p50_finish: tl.to_dt(q(0.5), true),
+                p80_finish: tl.to_dt(q(0.8), true),
+            }
+        };
+        let base = scen(&fin_base, tl0);
+        let thr = scen(&fin_threat, tl0);
+        let all = scen(&finishes, tl0);
+        let nt = opts.events.iter().filter(|e| e.kind == EventKind::Threat).count();
+        EventEffect {
+            threats: nt,
+            opportunities: ne - nt,
+            threat_p80_days: thr.p80_working_days - base.p80_working_days,
+            opportunity_p80_days: all.p80_working_days - thr.p80_working_days,
+            net_p80_days: all.p80_working_days - base.p80_working_days,
+            threat_mean_days: thr.mean_working_days - base.mean_working_days,
+            opportunity_mean_days: all.mean_working_days - thr.mean_working_days,
+            threat_cost_mean: has_cost.then_some(cost_threat / runs),
+            opportunity_cost_mean: has_cost.then_some(cost_opp / runs),
+            uncertainty_only: base,
+            with_threats: thr,
+            with_all_events: all,
+        }
+    });
     let event_cost = has_cost.then(|| {
         let mut sc = costs.clone();
         sc.sort_by(f64::total_cmp);
@@ -731,6 +988,39 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
         let (f80, c80) = (qq(&sf, 0.8), qq(&sc, 0.8));
         let joint = finishes.iter().zip(&costs).filter(|(f, c)| **f <= f80 + 1e-9 && **c <= c80 + 1e-9).count() as f64 / runs;
         CostRisk { mean: costs.iter().sum::<f64>() / runs, p50: qq(&sc, 0.5), p80: c80, p90: qq(&sc, 0.9), joint_p80: joint }
+    });
+    let total_cost = (opts.base_cost.is_some() || opts.cost_per_day.is_some()).then(|| {
+        let (bc, cpd) = (opts.base_cost.unwrap_or(0.0), opts.cost_per_day.unwrap_or(0.0));
+        let tot: Vec<f64> =
+            (0..finishes.len()).map(|r| bc + cpd * (finishes[r] - det) / mpd + if has_cost { costs[r] } else { 0.0 }).collect();
+        let (mut sc, mut sf) = (tot.clone(), finishes.clone());
+        sc.sort_by(f64::total_cmp);
+        sf.sort_by(f64::total_cmp);
+        let qq = |v: &[f64], x: f64| v[((x * runs) as usize).min(v.len() - 1)];
+        let joint = |f: f64, c: f64| finishes.iter().zip(&tot).filter(|(a, b)| **a <= f + 1e-9 && **b <= c + 1e-9).count() as f64 / runs;
+        let jp = |x: f64| joint(qq(&sf, x), qq(&sc, x));
+        let tf = match opts.target_date {
+            Some(d) => net.timeline.pos_of_date(d.succ_opt().unwrap_or(d)),
+            None => qq(&sf, 0.8),
+        };
+        let tcost = opts.target_cost.unwrap_or(qq(&sc, 0.8));
+        TotalCost {
+            base_cost: bc,
+            cost_per_day: cpd,
+            mean: tot.iter().sum::<f64>() / runs,
+            p50: qq(&sc, 0.5),
+            p70: qq(&sc, 0.7),
+            p80: qq(&sc, 0.8),
+            p90: qq(&sc, 0.9),
+            joint_p50: jp(0.5),
+            joint_p70: jp(0.7),
+            joint_p80: jp(0.8),
+            target_finish: net.timeline.to_dt(tf, true),
+            target_cost: tcost,
+            jcl: joint(tf, tcost),
+            p_target_date: finishes.iter().filter(|f| **f <= tf + 1e-9).count() as f64 / runs,
+            p_target_cost: tot.iter().filter(|c| **c <= tcost + 1e-9).count() as f64 / runs,
+        }
     });
     finishes.sort_by(f64::total_cmp);
     let q = |x: f64| finishes[((x * runs) as usize).min(finishes.len() - 1)];
@@ -768,6 +1058,8 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
         events,
         event_cost,
         uncertainty_coverage: None,
+        event_effect,
+        total_cost,
     })
 }
 
@@ -811,13 +1103,61 @@ pub fn render_text(r: &RiskReport) -> String {
             let _ = writeln!(s, "  {:>4} {:<40} {:+.2} {bar}", t.id, name, t.sensitivity);
         }
     }
-    if !r.events.is_empty() {
-        let _ = writeln!(s, "Risk events (probability, hit rate, mean finish impact when it fires):");
-        for e in &r.events {
-            let imp = e.mean_finish_impact_days.map(|v| format!("{v:+.1} wd")).unwrap_or_else(|| "n/a".into());
-            let name: String = e.name.chars().take(40).collect();
-            let cost = e.expected_cost.map(|c| format!("  E[cost]={c:.0}")).unwrap_or_default();
-            let _ = writeln!(s, "  {:<8} {:<40} p={:4.0}% hit={:4.0}% {imp}{cost}", e.id, name, e.probability * 100.0, e.hit_rate * 100.0);
+    let line = |s: &mut String, e: &EventRisk| {
+        let imp = e.mean_finish_impact_days.map(|v| format!("{v:+.1} wd")).unwrap_or_else(|| "n/a".into());
+        let name: String = e.name.chars().take(40).collect();
+        let cost = e.expected_cost.map(|c| format!("  E[cost]={c:.0}")).unwrap_or_default();
+        let prot = e.fixed_tasks_protected.filter(|n| *n > 0).map(|n| format!("  ({n} fixed task(s) not shortened)")).unwrap_or_default();
+        let _ = writeln!(
+            s,
+            "  {:<8} {:<40} p={:4.0}% hit={:4.0}% {imp}  r={:+.2}{cost}{prot}",
+            e.id,
+            name,
+            e.probability * 100.0,
+            e.hit_rate * 100.0,
+            e.sensitivity
+        );
+    };
+    let threats: Vec<&EventRisk> = r.events.iter().filter(|e| e.kind == EventKind::Threat).collect();
+    let mut opps: Vec<&EventRisk> = r.events.iter().filter(|e| e.kind == EventKind::Opportunity).collect();
+    opps.sort_by(|a, b| a.mean_finish_impact_days.unwrap_or(0.0).total_cmp(&b.mean_finish_impact_days.unwrap_or(0.0)));
+    if !threats.is_empty() {
+        let _ = writeln!(s, "Risk events (probability, hit rate, mean finish impact when it fires, sensitivity r):");
+        for e in threats {
+            line(&mut s, e);
+        }
+    }
+    if !opps.is_empty() {
+        let _ = writeln!(s, "Opportunities (probability, hit rate, mean finish impact when it fires, sensitivity r):");
+        for e in opps {
+            line(&mut s, e);
+        }
+    }
+    if let Some(x) = &r.event_effect {
+        let sc = |v: &Scenario| {
+            format!(
+                "P50 {:.1} wd -> {}, P80 {:.1} wd -> {}",
+                v.p50_working_days,
+                v.p50_finish.date(),
+                v.p80_working_days,
+                v.p80_finish.date()
+            )
+        };
+        let _ = writeln!(s, "Event effect (same sampled durations, {} threat(s), {} opportunit(ies)):", x.threats, x.opportunities);
+        let _ = writeln!(s, "  uncertainty only:     {}", sc(&x.uncertainty_only));
+        if x.threats > 0 {
+            let _ = writeln!(s, "  + threats:            {}", sc(&x.with_threats));
+        }
+        if x.opportunities > 0 {
+            let _ = writeln!(s, "  + opportunities:      {}", sc(&x.with_all_events));
+        }
+        let _ = writeln!(
+            s,
+            "  threats {:+.1} wd at P80, opportunities {:+.1} wd at P80, net {:+.1} wd (mean: {:+.1} / {:+.1})",
+            x.threat_p80_days, x.opportunity_p80_days, x.net_p80_days, x.threat_mean_days, x.opportunity_mean_days
+        );
+        if let (Some(t), Some(o)) = (x.threat_cost_mean, x.opportunity_cost_mean) {
+            let _ = writeln!(s, "  expected event cost: threats {t:.0}, opportunities {o:.0}, net {:.0}", t + o);
         }
     }
     if let Some(c) = &r.event_cost {
@@ -831,6 +1171,29 @@ pub fn render_text(r: &RiskReport) -> String {
             c.joint_p80 * 100.0
         );
         let _ = writeln!(s, "  (event costs only; overtime and extended general conditions are not modelled)");
+    }
+    if let Some(t) = &r.total_cost {
+        let _ = writeln!(
+            s,
+            "Total cost (base {:.0} + {:.0}/wd x (finish - deterministic) + event costs): mean {:.0}, P50 {:.0}, P70 {:.0}, P80 {:.0}, P90 {:.0}",
+            t.base_cost, t.cost_per_day, t.mean, t.p50, t.p70, t.p80, t.p90
+        );
+        let _ = writeln!(
+            s,
+            "  JCL {:.0}% for finish by {} and cost <= {:.0} (date alone {:.0}%, cost alone {:.0}%); joint at P50/P70/P80: {:.0}% / {:.0}% / {:.0}%",
+            t.jcl * 100.0,
+            t.target_finish.date(),
+            t.target_cost,
+            t.p_target_date * 100.0,
+            t.p_target_cost * 100.0,
+            t.joint_p50 * 100.0,
+            t.joint_p70 * 100.0,
+            t.joint_p80 * 100.0
+        );
+        let _ = writeln!(
+            s,
+            "  (cost model is base + time-dependent rate + event costs; quantity/rate uncertainty in the base estimate is not sampled)"
+        );
     }
     s
 }
@@ -1164,5 +1527,74 @@ mod event_tests {
         assert!(e.contains("lines 2 and 3") && e.contains("lines 4 and 5"), "{e}");
         // A sidecar row keyed by a duplicated plan activity ID is ambiguous.
         assert!(apply_uncertainty(&mut rows, "activity_id,uncertainty\nX1,vendor\n").unwrap_err().contains("several tasks"));
+    }
+
+    #[test]
+    fn opportunities_parse_in_either_sign_and_shorten_linked_tasks() {
+        let ev = parse_events(
+            "id,type,probability,min_days,likely_days,max_days,tasks,cost_min,cost_likely,cost_max\n\
+             O1,opportunity,100%,1,2,3,1,0,1000,2000\nO2,,100%,-3,-2,-1,1,-2000,-1000,0\nR1,threat,50%,1,1,1,2,,,\n",
+        )
+        .unwrap();
+        assert_eq!((ev[0].kind, ev[0].min_days, ev[0].likely_days, ev[0].max_days), (EventKind::Opportunity, -3.0, -2.0, -1.0));
+        assert_eq!(ev[1].kind, EventKind::Opportunity, "negative days without a type = opportunity");
+        assert_eq!((ev[0].min_days, ev[0].max_days, ev[0].cost), (ev[1].min_days, ev[1].max_days, ev[1].cost));
+        assert_eq!(ev[0].cost, Some((-2000.0, -1000.0, 0.0)));
+        assert_eq!(ev[2].kind, EventKind::Threat);
+        assert!(parse_events("id,probability,min_days,max_days,tasks\nX,0.5,-1,2,1\n").unwrap_err().contains("straddle"));
+        assert!(parse_events("id,type,probability,max_days,tasks\nX,threat,0.5,-2,1\n").is_err());
+        assert!(parse_events("id,type,probability,max_days,tasks\nX,maybe,0.5,2,1\n").is_err());
+
+        // A 10-day task, a certain 4-day saving: never below zero, and fixed tasks are protected.
+        let rows = parse_rows("name,start,duration_days,predecessors,uncertainty\nA,2026-11-02,10,,\nCure,,3,1,fixed\n").unwrap();
+        let ev = parse_events("id,probability,min_days,likely_days,max_days,tasks\nO1,1,-4,-4,-4,1;2\nO2,1,-20,-20,-20,1\n").unwrap();
+        let opts = RiskOptions { runs: 50, opt_factor: 1.0, pess_factor: 1.0, events: ev, ..Default::default() };
+        let r = simulate(&rows, d("2026-01-01"), &CalendarSpec::default(), &opts).unwrap();
+        assert_eq!(r.percentiles[1].working_days, 3.0, "A clamps at 0, Cure (fixed) keeps 3 days");
+        let x = r.event_effect.as_ref().unwrap();
+        assert_eq!((x.threats, x.opportunities), (0, 2));
+        assert_eq!(x.uncertainty_only.p80_working_days, 13.0);
+        assert_eq!(x.opportunity_p80_days, -10.0);
+        assert_eq!(r.events.iter().find(|e| e.id == "O1").unwrap().fixed_tasks_protected, Some(1));
+        assert!(render_text(&r).contains("Opportunities (") && render_text(&r).contains("1 fixed task(s) not shortened"));
+    }
+
+    #[test]
+    fn threat_and_opportunity_effects_and_jcl() {
+        let rows = parse_rows("name,start,duration_days,predecessors\nA,2026-11-02,10,\nB,,5,1\n").unwrap();
+        let ev =
+            parse_events("id,type,probability,max_days,tasks,cost_max\nR1,threat,0.5,4,1,10000\nO1,opportunity,0.5,2,2,3000\n").unwrap();
+        let base = RiskOptions { runs: 4000, opt_factor: 1.0, pess_factor: 1.0, ..Default::default() };
+        let opts = RiskOptions {
+            events: ev,
+            base_cost: Some(100_000.0),
+            cost_per_day: Some(1000.0),
+            target_date: Some(d("2026-11-20")),
+            target_cost: Some(110_000.0),
+            ..base.clone()
+        };
+        let r = simulate(&rows, d("2026-01-01"), &CalendarSpec::default(), &opts).unwrap();
+        let x = r.event_effect.as_ref().unwrap();
+        // Deterministic 15 wd; threat +4 on half the runs, opportunity -2 on half: means +2 / -1.
+        assert!((x.threat_mean_days - 2.0).abs() < 0.1, "{}", x.threat_mean_days);
+        assert!((x.opportunity_mean_days + 1.0).abs() < 0.1, "{}", x.opportunity_mean_days);
+        assert_eq!(x.uncertainty_only.p80_working_days, 15.0);
+        let o = r.events.iter().find(|e| e.id == "O1").unwrap();
+        assert!(o.sensitivity < -0.2 && (o.hit_rate - 0.5).abs() < 0.05, "{} {}", o.sensitivity, o.hit_rate);
+        assert!(r.events.iter().find(|e| e.id == "R1").unwrap().sensitivity > 0.5);
+        let t = r.total_cost.as_ref().unwrap();
+        // Runs: none (15 wd, 100k), threat only (19 wd, 114k), opp only (13 wd, 95k), both (17 wd, 109k).
+        assert!((t.mean - (100_000.0 + 114_000.0 + 95_000.0 + 109_000.0) / 4.0).abs() < 1500.0, "{}", t.mean);
+        // Target Fri 2026-11-20 = 15 wd: met by "none" and "opp only" (half the runs); cost <= 110k by all but threat-only.
+        assert!((t.p_target_date - 0.5).abs() < 0.05 && (t.jcl - 0.5).abs() < 0.05, "{} {}", t.p_target_date, t.jcl);
+        assert!((t.p_target_cost - 0.75).abs() < 0.05);
+        assert!(t.joint_p80 >= t.joint_p50);
+        assert!(render_text(&r).contains("JCL"));
+        // Without opportunities the result is unchanged by the new code paths (same seed).
+        let thr = parse_events("id,probability,max_days,tasks\nR1,0.5,4,1\n").unwrap();
+        let a = simulate(&rows, d("2026-01-01"), &CalendarSpec::default(), &RiskOptions { events: thr.clone(), ..base.clone() }).unwrap();
+        let b = simulate(&rows, d("2026-01-01"), &CalendarSpec::default(), &RiskOptions { events: thr, ..base }).unwrap();
+        assert_eq!(a.percentiles[2].working_days, b.percentiles[2].working_days);
+        assert_eq!(a.event_effect.as_ref().unwrap().opportunity_p80_days, 0.0);
     }
 }

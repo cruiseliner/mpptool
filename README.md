@@ -7,7 +7,8 @@
 - print summaries, tasks, resources, assignments and calendars as tables, JSON or CSV,
 - convert any of those formats to **Microsoft Project XML (MSPDI)**, which Microsoft Project opens directly (P6 → MS Project included),
 - build a new, scheduled project plan from a simple CSV, with stable activity IDs, holiday and shift calendars (10-hour days, Saturday overtime), total/free float and the critical path,
-- recompute CPM (`cpm`) and run a Monte Carlo schedule-risk analysis (`risk`: P50/P80/P90, criticality, sensitivity, risk events with optional cost) on any schedule it can read,
+- recompute CPM (`cpm`) and run a Monte Carlo schedule-risk analysis (`risk`: P50/P80/P90, criticality, sensitivity, threats **and opportunities** with optional cost, joint cost/schedule confidence) on any schedule it can read,
+- support lean and agile practice: Last Planner PPC and constraint log (`lps`), takt plans and flowline charts (`takt`), WSJF portfolio ranking (`wsjf`) and throughput forecasting (`forecast`),
 - check a schedule (DCMA-style `check`), compare versions, report variance, resource loading and boards, all on the schedule's own calendar.
 
 It works on Windows, macOS and Linux, and it is designed so both people and AI agents can script it and improve it.
@@ -75,6 +76,12 @@ mpptool to-xlsx     <file> <out.xlsx>         Excel workbook for Excel / Smartsh
 mpptool board       <file> <out.html> [--json] [--status-date D] [--title T]
                                               Kanban board by status with RAG flags
 mpptool portfolio   <folder> <out.html|out.json>   Dashboard of every readable plan in a folder
+mpptool lps         <workplan.csv> [--constraints c.csv] [--plan plan] [--json]
+                                              Last Planner PPC, reasons for variance, constraint log, make-ready
+mpptool takt        <trades.csv> --start D [--takt N] [--mode takt|flow] [--html out] [--plan-csv out]
+                                              Takt plan / flowline schedule and chart
+mpptool wsjf        <portfolio.csv> [--budget B] [--by-cd3] [--json]   WSJF / CD3 ranking with funding line
+mpptool forecast    <history.csv> --remaining N [--by D] [--json]      Throughput Monte Carlo forecast
 
 Global options:
   --locale de|fr|...      Language of .mpx files (en, de, fr, it, pt, sv, zh, es, ru)
@@ -382,6 +389,46 @@ The cost columns are optional. With them, `risk` reports each event's expected c
 
 In each run, an event fires with its probability. When it fires, one impact is sampled and added to **every** linked task (activity IDs or row numbers; a summary row means all of its tasks), so one cause hitting several tasks is modelled as one correlated hit. The report adds each task's **sensitivity** (Pearson correlation of its sampled duration with the finish, shown as a tornado list) and, for each event, its hit rate and mean finish impact (mean finish when it fires minus when it does not).
 
+#### Opportunities, threat vs opportunity effect, and joint cost/schedule confidence (v0.11)
+
+Risk events can be **opportunities** (time or cost saved). Add a `type` column (`threat` or `opportunity`) or write the
+impact as negative days. Both rows below mean "saves 1 to 3 days, most likely 2":
+
+```csv
+id,name,type,probability,min_days,likely_days,max_days,tasks,cost_min,cost_likely,cost_max
+O1,Prefabricated rough-in assemblies,opportunity,50%,1,2,3,A1110,0,3000,6000
+O2,Early AHJ pre-inspection walk,,40%,-3,-2,-1,A1500,,,
+```
+
+When an opportunity fires, its sampled saving shortens every linked task. A task never goes below 0 days, and tasks
+in the `fixed` uncertainty class (concrete cure, notice periods) are never shortened. The report lists them as "fixed task(s) not
+shortened". Opportunity cost columns are savings: positive numbers are read as savings, and negative numbers mean the
+same thing. Impacts that straddle zero are rejected, so split them into a threat and an opportunity.
+
+`risk` then reports threats and opportunities in separate sections, each with probability, **hit rate**, mean finish
+impact and **sensitivity** (correlation of the event's sampled impact with the finish: positive for threats that
+drive it, negative for opportunities that pull it in). An **event effect** block schedules every run's sampled durations
+three times: with no events, with threats only, and with all events. This uses common random numbers, so the
+threat effect (`+x wd at P80`), the opportunity effect (`−y wd at P80`) and the net effect aren't sampling noise.
+JSON: `events[].type`, `events[].sensitivity`, `events[].mean_sampled_days`, `events[].fixed_tasks_protected`,
+`event_effect` (`uncertainty_only`, `with_threats`, `with_all_events`, `threat_p80_days`, `opportunity_p80_days`,
+`net_p80_days`, mean and cost effects). A risk file with threats only gives the same results as v0.10.1 for the same
+seed.
+
+**Joint cost and schedule confidence level (JCL).** `--base-cost` (the point estimate) and `--cost-per-day` (a
+time-dependent burn rate, such as general conditions, field overhead and standby) give each run a total cost:
+base + rate × (finish − deterministic finish, in working days) + the costs of the events that fired. This is a simple
+form of the integrated cost and schedule risk analysis described in AACE RP 57R-09. The report gives the total-cost P50/P70/P80/P90, the joint
+confidence at P50/P70/P80, and the **JCL** of meeting `--target-date` and `--target-cost` together (default: the P80
+date and P80 cost). It also shows each target's probability on its own. NASA policy (NPR 7120.5F) budgets major projects at a 70% JCL.
+Uncertainty in quantities and unit rates in the base estimate is **not** sampled, so this JCL is narrower than a full
+cost-risk model.
+
+```bash
+mpptool risk plan.csv --holidays US --risks raid.csv --base-cost 2400000 --cost-per-day 6500 \
+    --target-date 2027-02-05 --target-cost 2450000
+```
+
 #### Uncertainty for imported schedules
 
 `.mpp`/`.xer`/XML files carry no three-point estimates or classes, so `risk` on them uses `--opt`/`--pess`. Give a
@@ -447,6 +494,68 @@ id,actual_start,actual_finish,remaining_days,percent_complete
 
 `check --exclude-endpoints` stops check 1 counting the project start milestone (no predecessors) and finish milestone (no successors). `check --thresholds logic=10,lags=10,fs=85,hard=5,high_float=60,high_float_pct=5,high_duration=30,high_duration_pct=5,missed=5,cpli=0.9,bei=0.9` overrides any threshold. The defaults are DCMA's.
 
+### Last Planner System® metrics (`lps`)
+
+Weekly work plan (`week, activity, responsible, committed, completed, reason`) and an optional constraint log
+(`id, activity_id, description, category, owner, raised, need_by, resolved`):
+
+```bash
+mpptool lps workplan.csv --constraints constraints.csv --status-date 2026-11-27
+mpptool lps workplan.csv --constraints constraints.csv --plan plan.csv --holidays US --lookahead 6 --status-date 2026-11-27
+```
+
+The report gives **PPC** (Percent Plan Complete: assignments completed as promised ÷ assignments committed, as defined by the Lean Construction
+Institute) by week, overall, for the last 4 weeks and as a week-over-week trend. It also gives PPC by responsible party (lowest first) and a
+**reasons-for-variance Pareto** (free text is grouped into the usual categories: prerequisite work, design/RFI,
+submittal, materials, labor, equipment, weather, inspection/permit, space, owner change, underestimated effort).
+From the constraint log it reports open, overdue and resolved constraints, the share resolved by their need-by date, the mean days to resolve,
+open constraints by owner and by category, and the overdue items. With `--plan` (any schedule mpptool reads),
+activities whose early start falls in the lookahead window are checked against open constraints (matched by activity ID or
+exact name), giving the share **made ready** and a list of blocked activities. Rows with `committed = no` are left out of
+PPC. Missed commitments with no reason are flagged.
+
+### Takt plans and flowline (location-based) schedules (`takt`)
+
+```bash
+mpptool takt trades.csv --start 2027-01-04 --holidays US --takt 3 --html flowline.html --plan-csv takt-plan.csv
+mpptool takt trades.csv --start 2027-01-04 --mode flow --buffer 1          # continuous crews (line of balance)
+mpptool from-csv takt-plan.csv takt.xml --holidays US                         # into MS Project
+```
+
+Input is `trade,zone,days` (trades in sequence order and zones in flow order, as they first appear), or `trade,days` with
+`--zones 6` or `--zones "L1 east,L1 west,L2"`. In `takt` mode, every trade moves through the zones at one rhythm:
+duration = (trades + buffer wagons + zones − 1) × takt. Trade-zone cells whose work exceeds the takt are flagged as
+**overloaded**, which means the zone or crew needs rebalancing. Train load is total work ÷ the capacity of the takt grid. In `flow` mode, each trade keeps
+one continuous crew at its own pace and starts as early as it can without overtaking the previous trade in any zone
+(plus `--buffer` days). The HTML page draws the flowline chart, with zones on the y axis and working days and dates on the x axis.
+`--plan-csv` writes a from-csv plan with activity IDs `T<trade>-Z<zone>`, links and SNET starts.
+
+### Portfolio and backlog prioritization (`wsjf`)
+
+```bash
+mpptool wsjf portfolio.csv --budget 1700000
+mpptool wsjf portfolio.csv --by-cd3 --json
+```
+
+Columns: `id, name, business_value, time_criticality, risk_reduction, job_size` (relative scores on the SAFe modified
+Fibonacci scale, so scores off the scale are noted), with optional `cost`, `cod_per_week` and `duration_weeks`. WSJF = (BV + TC +
+RR/OE) ÷ job size. Ties go to the smaller job. With `cost` and `--budget`, items are funded in rank order and the
+cut line is shown. With `cod_per_week` and `duration_weeks` (Reinertsen's economic cost of delay), `--by-cd3` ranks by
+CD3 = CoD ÷ duration, and the report compares the total cost of delay of the ranked order against the input order.
+
+### Throughput forecasting (`forecast`)
+
+```bash
+mpptool forecast closed-per-week.csv --remaining 60 --start 2026-10-19 --split 1,1.2 --by 2026-12-31
+mpptool forecast finished-dates.csv --period day --holidays US --remaining 40
+```
+
+Monte Carlo "when will it be done?" from throughput history, for any countable work: stories, punch-list items,
+submittals reviewed, RFIs closed. Each run resamples past periods' completions until the remaining count, multiplied by a
+sampled scope-growth/split factor, is done. The output gives the dates at 50/70/85/95% confidence, and with `--by` it also
+gives how many items will be done by that date at each confidence level. History is a `completed` column per period, or one `finished` date per item (binned,
+with empty periods counted as zero). `--last N` uses recent history only. Fewer than 10 samples gives a warning.
+
 ## What carries over in `to-xml`
 
 | Carried over | Not carried over (yet) |
@@ -471,7 +580,8 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - Primavera: these are not mapped: secondary constraints, activity codes, UDFs, steps, expenses, baselines (P6 baselines live in separate projects), resource curves, and level-of-effort / WBS-summary semantics (both are read as ordinary tasks). Durations are at-completion hours, not recalculated against calendars. Relationships to activities in *other* projects are dropped. XER from P6 versions older than 6 may use an older calendar format that is not parsed; those calendars fall back to Mon–Fri 08:00–17:00.
 - The `from-csv` scheduler is intentionally simple. It uses one project calendar (no task or resource calendars), has no resource leveling, and only supports SNET constraints. Overtime is modelled as extra working time on the calendar; separate overtime work and overtime cost rates are not written.
 - `cpm`/`risk` on imported files use only the project calendar and SNET/MSO constraints (see above).
-- `risk` samples task durations independently (risk events give common-cause correlation; there is no general correlation matrix).
+- `risk` samples task durations independently (risk events give common-cause correlation; there is no general correlation matrix). The JCL cost model is base + time-dependent rate + event costs; base-estimate uncertainty is not sampled.
+- `lps`, `takt`, `wsjf` and `forecast` are planning aids over CSV data; they don't replace pull-planning sessions, a takt production system, a portfolio governance process or a team's own flow metrics tool.
 - Duration months are converted as 20 working days.
 - `check` test 12 (critical path test) is a static continuity check, not DCMA's delay-and-reschedule test.
 - `compare`/`variance` count slip on the project calendar (no task calendars); PV and earned schedule assume work spread evenly over each baseline, not the timephased baseline.
@@ -490,7 +600,13 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - [x] Kanban board (`board`) and portfolio dashboard (`portfolio`) — v0.6.0
 - [x] Holiday calendars, weekend/overtime work patterns, float in XML, Monte Carlo `risk` — v0.7.0
 - [x] Risk events, uncertainty classes, sensitivity, progress updates, leveling within float, DCMA options — v0.8.0
+- [x] Opportunities, threat/opportunity effect, JCL with time-dependent cost; Last Planner (`lps`), takt/flowline (`takt`), WSJF (`wsjf`), throughput forecast (`forecast`) — v0.11.0
 - [ ] XER writer (next: TASK/TASKPRED/CALENDAR/PROJWBS tables)
+- [ ] Earned value with timephased baselines; EVMS (EIA-748-E) guideline checks
+- [ ] Cost-estimate uncertainty (quantity × unit-rate ranges) in the JCL; correlation between task durations
+- [ ] 4D/VDC export: activity-ID ↔ model-element link table (IFC GUIDs) for Navisworks/Synchro
+- [ ] Reference-class uplift (`risk --uplift`) from a user-supplied reference class
+- [ ] Portfolio dashboards that include PPC, JCL and benefits/OKR fields
 - [ ] Holiday-aware `compare`/`variance` slip; regional holiday tables; correlation between task durations
 - [ ] Primavera: activity codes/UDFs as custom fields, baselines, expenses, cross-project links, writing XER
 - [ ] Code-signed Windows binaries; winget / Homebrew packages

@@ -105,9 +105,21 @@ enum Cmd {
         pess_factor: f64,
         #[arg(long)]
         json: bool,
-        /// RAID risk events CSV: id,name,probability,min_days,likely_days,max_days,tasks (tasks = activity IDs or row numbers, ;-separated); optional cost_min,cost_likely,cost_max
+        /// RAID risk events CSV: id,name,probability,min_days,likely_days,max_days,tasks (tasks = activity IDs or row numbers, ;-separated); optional cost_min,cost_likely,cost_max and type (threat/opportunity; negative days = opportunity)
         #[arg(long)]
         risks: Option<PathBuf>,
+        /// Point cost estimate for a total-cost and joint cost/schedule confidence (JCL) analysis
+        #[arg(long)]
+        base_cost: Option<f64>,
+        /// Time-dependent cost per working day (general conditions, overhead): cost moves by rate x (finish - deterministic)
+        #[arg(long)]
+        cost_per_day: Option<f64>,
+        /// Target finish date for the JCL (default: the P80 date)
+        #[arg(long, value_parser = parse_date)]
+        target_date: Option<chrono::NaiveDate>,
+        /// Target budget for the JCL (default: the P80 total cost)
+        #[arg(long)]
+        target_cost: Option<f64>,
         /// Uncertainty class factors (repeatable), e.g. vendor=0.95,2.2; built in: labor, equipment, design, vendor, permit, weather, fixed
         #[arg(long = "class", value_name = "NAME=O,P")]
         classes: Vec<String>,
@@ -233,6 +245,99 @@ enum Cmd {
     },
     /// Roll up every readable plan in a folder into one dashboard: HTML (.html) or JSON (.json)
     Portfolio { folder: PathBuf, out: PathBuf },
+    /// Last Planner System metrics: PPC by week and party, reasons for variance, constraint log, lookahead make-ready check
+    Lps {
+        /// Weekly work plan CSV: week, activity, responsible, committed, completed, reason
+        workplan: PathBuf,
+        /// Constraint log CSV: id, activity_id, description, category, owner, raised, need_by, resolved
+        #[arg(long)]
+        constraints: Option<PathBuf>,
+        /// Schedule (.csv/.mpp/.xml/.xer) whose activities starting in the lookahead window are checked against open constraints
+        #[arg(long)]
+        plan: Option<PathBuf>,
+        /// Lookahead window in weeks (with --plan)
+        #[arg(long, default_value_t = 6)]
+        lookahead: u32,
+        /// Status date (YYYY-MM-DD); default today
+        #[arg(long = "status-date", value_parser = parse_date)]
+        status: Option<chrono::NaiveDate>,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        cal: CalArgs,
+    },
+    /// Takt plan or flowline (location-based) schedule from a trade x zone CSV: table, HTML flowline chart, from-csv plan
+    Takt {
+        /// CSV: trade,zone,days (or trade,days with --zones)
+        input: PathBuf,
+        /// First working day (YYYY-MM-DD)
+        #[arg(long, value_parser = parse_date)]
+        start: chrono::NaiveDate,
+        /// Zones when the CSV has no zone column: a count (Z1..Zn) or comma-separated names
+        #[arg(long)]
+        zones: Option<String>,
+        /// Takt time in working days (default: the largest trade-zone duration, rounded up)
+        #[arg(long)]
+        takt: Option<f64>,
+        /// takt (fixed rhythm) or flow (continuous crews, line of balance)
+        #[arg(long, value_enum, default_value_t = TaktMode::Takt)]
+        mode: TaktMode,
+        /// Buffer between trades: empty wagons (takt mode) or working days (flow mode)
+        #[arg(long, default_value_t = 0.0)]
+        buffer: f64,
+        /// Write an HTML flowline chart
+        #[arg(long)]
+        html: Option<PathBuf>,
+        /// Write a from-csv plan (activity IDs, links, SNET starts) for MS Project XML
+        #[arg(long)]
+        plan_csv: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        cal: CalArgs,
+    },
+    /// Rank a portfolio or backlog by WSJF ((BV + TC + RR/OE) / job size) or CD3 (cost of delay per week / duration)
+    Wsjf {
+        input: PathBuf,
+        /// Funding line: items are funded in rank order while cumulative `cost` fits
+        #[arg(long)]
+        budget: Option<f64>,
+        /// Rank by CD3 (needs cod_per_week and duration_weeks) instead of relative WSJF
+        #[arg(long)]
+        by_cd3: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Monte Carlo "when will it be done?" forecast from throughput history (items completed per week or day)
+    Forecast {
+        /// Throughput CSV: completed per period (optional date), or one finished date per item
+        history: PathBuf,
+        /// Items remaining
+        #[arg(long)]
+        remaining: f64,
+        /// Forecast start (YYYY-MM-DD); default today
+        #[arg(long, value_parser = parse_date)]
+        start: Option<chrono::NaiveDate>,
+        #[arg(long, value_enum, default_value_t = PeriodArg::Week)]
+        period: PeriodArg,
+        /// Scope growth / split factor range applied to the remaining count, e.g. 1.0,1.3
+        #[arg(long, default_value = "1,1")]
+        split: String,
+        /// Also forecast how many items are done by this date
+        #[arg(long, value_parser = parse_date)]
+        by: Option<chrono::NaiveDate>,
+        /// Use only the most recent N periods of history
+        #[arg(long)]
+        last: Option<usize>,
+        #[arg(long, default_value_t = 10_000)]
+        runs: usize,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        cal: CalArgs,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -249,6 +354,18 @@ enum MatchArg {
     Uid,
     ActivityId,
     Name,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum TaktMode {
+    Takt,
+    Flow,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum PeriodArg {
+    Week,
+    Day,
 }
 
 /// Working-calendar options shared by `from-csv` and `risk`.
@@ -529,10 +646,45 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
-        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, risks, classes, uncertainty, strict, cal, prog } => {
+        Cmd::Risk {
+            input,
+            runs,
+            seed,
+            opt_factor,
+            pess_factor,
+            json,
+            risks,
+            base_cost,
+            cost_per_day,
+            target_date,
+            target_cost,
+            classes,
+            uncertainty,
+            strict,
+            cal,
+            prog,
+        } => {
             let (mut rows, spec, sopts) = load_input(&input, &cal, &prog, &opts, engine)?;
-            let mut opts =
-                mpptool::risk::RiskOptions { runs, seed, opt_factor, pess_factor, status_date: sopts.status_date, ..Default::default() };
+            for (n, v) in [("--base-cost", base_cost), ("--cost-per-day", cost_per_day), ("--target-cost", target_cost)] {
+                if v.is_some_and(|x| !x.is_finite()) {
+                    return Err(format!("{n}: not a number"));
+                }
+            }
+            if (target_date.is_some() || target_cost.is_some()) && base_cost.is_none() && cost_per_day.is_none() {
+                return Err("--target-date/--target-cost need --base-cost and/or --cost-per-day".into());
+            }
+            let mut opts = mpptool::risk::RiskOptions {
+                runs,
+                seed,
+                opt_factor,
+                pess_factor,
+                status_date: sopts.status_date,
+                base_cost,
+                cost_per_day,
+                target_date,
+                target_cost,
+                ..Default::default()
+            };
             for c in &classes {
                 let (k, v) = mpptool::risk::parse_class(c)?;
                 opts.classes.insert(k, v);
@@ -743,6 +895,95 @@ fn run(cli: Cli) -> Result<(), String> {
                 n(Rag::Green)
             );
             Ok(())
+        }
+        Cmd::Lps { workplan, constraints, plan, lookahead, status, json: j, cal } => {
+            let status = status.unwrap_or_else(|| chrono::Local::now().date_naive());
+            let rd = |f: &Path| std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()));
+            let ctext = constraints.as_deref().map(rd).transpose()?;
+            let mut r =
+                mpptool::lps::report(&rd(&workplan)?, ctext.as_deref(), status).map_err(|e| format!("{}: {e}", workplan.display()))?;
+            if let Some(pf) = &plan {
+                let cs = match &ctext {
+                    Some(t) => mpptool::lps::parse_constraints(t, status)?,
+                    None => return Err("--plan needs --constraints".into()),
+                };
+                let prog = ProgressArgs { progress: None, status: None, level: false };
+                let (rows, spec, sopts) = load_input(pf, &cal, &prog, &opts, engine)?;
+                let (p, _) = from_csv::schedule_full(&rows, None, status, &spec, &sopts)?;
+                let early: Vec<_> = p.tasks.iter().map(|t| t.start).collect();
+                let summ: Vec<bool> = p.tasks.iter().map(|t| t.summary).collect();
+                let to = status + chrono::Duration::days(7 * lookahead as i64);
+                r.lookahead = Some(mpptool::lps::lookahead(&rows, &early, &summ, &cs, status, to));
+            }
+            if j {
+                json(&r)
+            } else {
+                print!("{}", mpptool::lps::render_text(&r));
+                Ok(())
+            }
+        }
+        Cmd::Takt { input, start, zones, takt, mode, buffer, html, plan_csv, json: j, cal } => {
+            let text = std::fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
+            let zn = zones.as_deref().map(mpptool::takt::zone_names).transpose()?.unwrap_or_default();
+            let inp = mpptool::takt::parse(&text, &zn).map_err(|e| format!("{}: {e}", input.display()))?;
+            let spec = cal.spec()?;
+            let wc = spec.resolve(chrono::Datelike::year(&start))?;
+            let m = match mode {
+                TaktMode::Takt => mpptool::takt::Mode::Takt,
+                TaktMode::Flow => mpptool::takt::Mode::Flow,
+            };
+            if matches!(m, mpptool::takt::Mode::Flow) && takt.is_some() {
+                return Err("--takt applies to --mode takt only".into());
+            }
+            let p = mpptool::takt::schedule(&inp, m, takt, buffer, start, wc)?;
+            if let Some(h) = &html {
+                let title = input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                write_file(h, &mpptool::takt::render_html(&p, &title))?;
+                eprintln!("wrote {}", h.display());
+            }
+            if let Some(c) = &plan_csv {
+                write_file(c, &mpptool::takt::to_plan_csv(&p))?;
+                eprintln!("wrote {} ({} activities; run mpptool from-csv on it for MS Project XML)", c.display(), p.cells.len());
+            }
+            if j {
+                json(&p)
+            } else {
+                print!("{}", mpptool::takt::render_text(&p));
+                Ok(())
+            }
+        }
+        Cmd::Wsjf { input, budget, by_cd3, json: j } => {
+            let text = std::fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
+            let r = mpptool::wsjf::rank(&text, budget, by_cd3).map_err(|e| format!("{}: {e}", input.display()))?;
+            if j {
+                json(&r)
+            } else {
+                print!("{}", mpptool::wsjf::render_text(&r));
+                Ok(())
+            }
+        }
+        Cmd::Forecast { history, remaining, start, period, split, by, last, runs, seed, json: j, cal } => {
+            let text = std::fs::read_to_string(&history).map_err(|e| format!("{}: {e}", history.display()))?;
+            let start = start.unwrap_or_else(|| chrono::Local::now().date_naive());
+            let wc = cal.spec()?.resolve(chrono::Datelike::year(&start))?;
+            let period = match period {
+                PeriodArg::Week => mpptool::forecast::Period::Week,
+                PeriodArg::Day => mpptool::forecast::Period::Day,
+            };
+            let (a, b) = split.split_once(',').unwrap_or((&split, &split));
+            let sp = (
+                a.trim().parse::<f64>().map_err(|_| format!("--split '{split}': want low,high"))?,
+                b.trim().parse::<f64>().map_err(|_| format!("--split '{split}': want low,high"))?,
+            );
+            let h = mpptool::forecast::parse_history(&text, period, &wc).map_err(|e| format!("{}: {e}", history.display()))?;
+            let o = mpptool::forecast::ForecastOptions { remaining, start, period, runs, seed, split: sp, by, last };
+            let f = mpptool::forecast::forecast(&h, &wc, &o)?;
+            if j {
+                json(&f)
+            } else {
+                print!("{}", mpptool::forecast::render_text(&f));
+                Ok(())
+            }
         }
         Cmd::Portfolio { folder, out } => {
             if !folder.is_dir() {
