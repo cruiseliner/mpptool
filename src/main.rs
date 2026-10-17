@@ -111,6 +111,9 @@ enum Cmd {
         /// Uncertainty class factors (repeatable), e.g. vendor=0.95,2.2; built in: labor, equipment, design, vendor, permit, weather, fixed
         #[arg(long = "class", value_name = "NAME=O,P")]
         classes: Vec<String>,
+        /// Uncertainty sidecar CSV keyed by activity_id (or id/row, or name): uncertainty class and/or optimistic,pessimistic days. Works on imported .mpp/.xer/XML
+        #[arg(long)]
+        uncertainty: Option<PathBuf>,
         #[command(flatten)]
         cal: CalArgs,
         #[command(flatten)]
@@ -520,13 +523,18 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
-        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, risks, classes, cal, prog } => {
-            let (rows, spec, sopts) = load_input(&input, &cal, &prog, &opts, engine)?;
+        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, risks, classes, uncertainty, cal, prog } => {
+            let (mut rows, spec, sopts) = load_input(&input, &cal, &prog, &opts, engine)?;
             let mut opts =
                 mpptool::risk::RiskOptions { runs, seed, opt_factor, pess_factor, status_date: sopts.status_date, ..Default::default() };
             for c in &classes {
                 let (k, v) = mpptool::risk::parse_class(c)?;
                 opts.classes.insert(k, v);
+            }
+            if let Some(f) = &uncertainty {
+                let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+                let n = mpptool::risk::apply_uncertainty(&mut rows, &text).map_err(|e| format!("{}: {e}", f.display()))?;
+                eprintln!("uncertainty: {n} task(s) updated from {}", f.display());
             }
             if let Some(f) = &risks {
                 let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
@@ -830,6 +838,18 @@ fn print_variance(v: &mpptool::variance::VarianceReport) {
                 r(e.cpi),
                 r(e.eac)
             );
+            println!("  EAC (AC+BAC−EV) {}  EAC (CPI×SPI) {}  TCPI {}", r(e.eac_atypical), r(e.eac_cpi_spi), r(e.tcpi));
+            if let Some(es) = &e.earned_schedule {
+                println!(
+                    "  Earned schedule: ES {:.1} wd  AT {:.1} wd  SV(t) {:+.1} wd  SPI(t) {}  IEAC(t) {} wd -> {}",
+                    es.es_days,
+                    es.actual_time_days,
+                    es.sv_t_days,
+                    r(es.spi_t),
+                    r(es.ieac_t_days),
+                    es.ieac_t_finish.map(|d| d.to_string()).unwrap_or_else(|| "–".into())
+                );
+            }
         }
         None => println!("Earned value: not available (no baseline cost in the file)"),
     }

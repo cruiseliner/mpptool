@@ -259,7 +259,12 @@ pub fn read(path: &Path, opts: &ReadOptions) -> Result<Plan, String> {
             name: t.get_name().unwrap_or_default(),
             outline_level: t.get_outline_level().unwrap_or(1),
             wbs: t.get_wbs(),
-            activity_id: if text1_is_activity_id { t.get_text(1) } else { None },
+            // Any MSP custom text field aliased "Activity ID" (survives MS Project re-saves that move or keep Text1).
+            activity_id: match t.get_field_by_alias("Activity ID") {
+                Some(mpxj::field_value::FieldValue::String(v)) if !v.trim().is_empty() => Some(v),
+                _ if text1_is_activity_id => t.get_text(1),
+                _ => None,
+            },
             start: t.get_start(),
             finish: t.get_finish(),
             duration_hours: dur_hours(&t.get_duration(), mpdf, mpwf),

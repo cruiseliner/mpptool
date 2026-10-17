@@ -418,3 +418,54 @@ fn activity_ids_drive_predecessors_progress_and_risks() {
     std::fs::write(&bad, "activity_id,name,duration_days,predecessors\nA1,x,1,\nA1,y,1,\n").unwrap();
     assert!(!bin().args(["from-csv", bad.to_str().unwrap(), tmp("aid-bad.xml").to_str().unwrap()]).output().unwrap().status.success());
 }
+
+#[test]
+fn activity_id_survives_ms_project_style_resave() {
+    let c = tmp("resave.csv");
+    std::fs::write(&c, "activity_id,name,start,duration_days,predecessors\nA10,Dig,2026-06-01,5,\nA20,Pour,,5,A10\nA30,Cure,,3,A20\n")
+        .unwrap();
+    let x = tmp("resave-a.xml");
+    run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap()]);
+    // Simulate a re-save: the aliased field moves to Text5 and every UID changes.
+    let mut t = std::fs::read_to_string(&x)
+        .unwrap()
+        .replace("188743731", "188743743")
+        .replace("<FieldName>Text1</FieldName>", "<FieldName>Text5</FieldName>");
+    for n in (1..=3).rev() {
+        t = t
+            .replace(&format!("<UID>{n}</UID>"), &format!("<UID>{}</UID>", n + 100))
+            .replace(&format!("<PredecessorUID>{n}</PredecessorUID>"), &format!("<PredecessorUID>{}</PredecessorUID>", n + 100));
+    }
+    let y = tmp("resave-b.xml");
+    std::fs::write(&y, t).unwrap();
+    let out = run_ok(&["compare", "--match", "activity-id", x.to_str().unwrap(), y.to_str().unwrap()]);
+    assert!(out.contains("added 0, removed 0, changed 0, unchanged 3"), "{out}");
+    assert!(run_ok(&["compare", x.to_str().unwrap(), y.to_str().unwrap()]).contains("matched by activity_id"));
+}
+
+#[test]
+fn risk_uncertainty_sidecar_on_imported_xml() {
+    let c = tmp("unc-plan.csv");
+    std::fs::write(
+        &c,
+        "activity_id,name,start,duration_days,predecessors,uncertainty\nA10,Order,2026-06-01,10,,vendor\nA20,Install,,5,A10,labor\n",
+    )
+    .unwrap();
+    let x = tmp("unc-plan.xml");
+    run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap()]);
+    let s = tmp("unc-side.csv");
+    std::fs::write(&s, "activity_id,uncertainty,optimistic,pessimistic\nA10,vendor,,\nA20,,4,8\n").unwrap();
+    let p = |args: &[&str]| -> serde_json::Value { serde_json::from_str(&run_ok(args)).unwrap() };
+    let xs = x.to_str().unwrap();
+    let with = p(&["risk", xs, "--uncertainty", s.to_str().unwrap(), "--json", "--runs", "500"]);
+    let without = p(&["risk", xs, "--json", "--runs", "500"]);
+    let class = |v: &serde_json::Value, n: &str| v["tasks"].as_array().unwrap().iter().find(|t| t["name"] == n).unwrap()["class"].clone();
+    assert_eq!(class(&with, "Order"), "vendor");
+    assert_eq!(class(&without, "Order"), "default", "imported files carry no classes");
+    let inst = with["tasks"].as_array().unwrap().iter().find(|t| t["name"] == "Install").unwrap().clone();
+    assert_eq!(inst["optimistic_days"], 4.0);
+    assert_eq!(inst["pessimistic_days"], 8.0);
+    let bad = tmp("unc-bad.csv");
+    std::fs::write(&bad, "activity_id,uncertainty\nZZ9,vendor\n").unwrap();
+    assert!(!bin().args(["risk", xs, "--uncertainty", bad.to_str().unwrap()]).output().unwrap().status.success());
+}

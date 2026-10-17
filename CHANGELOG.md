@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.0 — EAC forms, TCPI, earned schedule, uncertainty sidecar, re-save-safe activity IDs
+- `variance`: adds EAC (atypical) = AC + (BAC − EV), EAC (CPI×SPI) = AC + (BAC − EV)/(CPI × SPI), TCPI, and earned schedule (ES, AT, SV(t), SPI(t), IEAC(t) with a forecast finish) on the project calendar. New JSON fields only. Existing fields are unchanged.
+- `risk --uncertainty sidecar.csv`: uncertainty class and/or optimistic/pessimistic days keyed by activity ID (or row, or name). It works on imported .mpp/.xer/XML, which carry no three-point data.
+- Readers: the activity ID is read from any MS Project task custom field aliased "Activity ID" (any format, any Text field). It survives an MS Project re-save that renumbers UIDs or moves the field. Previously this only worked for MSPDI and Text1.
+- Library: `risk::apply_uncertainty`, `variance::{earned_schedule, EarnedSchedule}`; `EarnedValue` gained `eac_atypical`, `eac_cpi_spi`, `tcpi`, `earned_schedule`.
+
 ## v0.9.0 — activity IDs, calendar-aware reports, risk-event cost
 - `from-csv`: optional `activity_id` (or `id`) column. Predecessors may name activity IDs (`A1010`, `A1010SS+2`, `A1010FF-1d`); plain numbers are still row numbers, and `#3` forces a row number. IDs must be unique and are written to the XML as Text1 ("Activity ID"). Activity IDs read from P6/MSP files are carried into `cpm`/`risk`.
 - Progress CSV `id` (or `activity_id`) matches the activity ID first, then the row number. Risk-event `tasks` resolve the same way.

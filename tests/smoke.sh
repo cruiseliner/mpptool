@@ -53,5 +53,36 @@ nl=$(grep -c 'leveled by mpptool' "$T/lev.xml" || true); nu=$(grep -c 'leveled b
 echo "      leveled tasks: $nl (unleveled file: $nu)"
 [ "$nu" -eq 0 ] && pass "unleveled copy has no leveling SNETs (use it for cpm/risk)" || fail "unleveled file has leveling notes"
 
+# 7. Uncertainty sidecar on an imported XML reproduces the CSV-class run (same seed).
+python3 - "$PLAN" "$T/unc.csv" <<'PY'
+import csv,sys
+r=list(csv.DictReader(open(sys.argv[1]))); w=csv.writer(open(sys.argv[2],'w')); w.writerow(['row','uncertainty'])
+[w.writerow([i+1,x.get('uncertainty','')]) for i,x in enumerate(r) if x.get('uncertainty')]
+PY
+a=$("$B" risk "$PLAN" --holidays US --risks "$RISKS" --json | js 'd["percentiles"]')
+b=$("$B" risk "$T/us.xml" --risks "$RISKS" --uncertainty "$T/unc.csv" --json 2>/dev/null | js 'd["percentiles"]')
+c=$("$B" risk "$T/us.xml" --risks "$RISKS" --json | js 'd["percentiles"]')
+[ "$a" = "$b" ] && pass "uncertainty sidecar on XML = CSV classes" || fail "sidecar run differs from CSV run"
+[ "$a" != "$c" ] && pass "without sidecar, imported XML loses classes (documented)" || fail "imported XML unexpectedly kept classes"
+
+# 8. Activity IDs survive an MS Project-style re-save (field moved to Text5, UIDs renumbered).
+printf 'activity_id,name,start,duration_days,predecessors\nA10,Dig,2026-06-01,5,\nA20,Pour,,5,A10\nA30,Cure,,3,A20\n' > "$T/ai.csv"
+"$B" from-csv "$T/ai.csv" "$T/ai.xml" >/dev/null
+python3 - "$T/ai.xml" "$T/ai2.xml" <<'PY'
+import re,sys
+x=open(sys.argv[1]).read().replace('188743731','188743743').replace('<FieldName>Text1</FieldName>','<FieldName>Text5</FieldName>')
+x=re.sub(r'<(UID|PredecessorUID)>([1-9]\d*)</\1>',lambda m:'<%s>%d</%s>'%(m.group(1),int(m.group(2))+100,m.group(1)),x)
+open(sys.argv[2],'w').write(x)
+PY
+"$B" compare --match activity-id "$T/ai.xml" "$T/ai2.xml" | grep -q 'added 0, removed 0, changed 0, unchanged 3' \
+  && pass "compare --match activity-id survives re-save" || fail "activity IDs lost after re-save"
+
+# 9. EVM: EAC forms, TCPI, earned schedule present (needs a cost-loaded baseline; uses the repo fixture when present).
+EVX="$here/fixtures/status.xml"
+if [ -f "$EVX" ]; then
+  ev=$("$B" variance --json "$EVX" | js 'all(d["earned_value"].get(k) is not None for k in ["eac","eac_atypical","eac_cpi_spi","tcpi"]) and d["earned_value"]["earned_schedule"]["spi_t"] is not None')
+  [ "$ev" = "True" ] && pass "variance: 3 EAC forms, TCPI, SPI(t)/IEAC(t)" || fail "variance EVM fields missing"
+fi
+
 echo "---- $fails failed"
 exit "$fails"
