@@ -74,6 +74,15 @@ pub struct MatchCoverage {
     pub new_uid_fallback: usize,
     /// Those tasks, as `old`/`new` refs.
     pub fallback_tasks: Vec<FallbackTask>,
+    /// UID-matched pairs whose names differ: likely mis-paired after an MS Project re-save renumbered UIDs.
+    pub name_mismatches: Vec<NameMismatch>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct NameMismatch {
+    pub key: String,
+    pub old_name: String,
+    pub new_name: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -95,6 +104,25 @@ impl MatchCoverage {
             "name" => format!("matched {} by name", self.by_name),
             _ => format!("matched {} by uid", self.by_uid),
         }
+    }
+    /// Number of findings that make `compare --strict` fail (UID fallbacks + UID-matched name mismatches).
+    pub fn strict_failures(&self) -> usize {
+        self.fallback() + self.name_mismatches.len()
+    }
+    /// Warning for UID-matched pairs whose names differ.
+    pub fn name_warning(&self) -> Option<String> {
+        (!self.name_mismatches.is_empty()).then(|| {
+            let mut v: Vec<String> =
+                self.name_mismatches.iter().take(10).map(|m| format!("[{}] '{}' → '{}'", m.key, m.old_name, m.new_name)).collect();
+            if self.name_mismatches.len() > 10 {
+                v.push(format!("… {} more", self.name_mismatches.len() - 10));
+            }
+            format!(
+                "WARNING: {} UID-matched task(s) changed name; check for mis-pairing after UID renumbering: {}",
+                self.name_mismatches.len(),
+                v.join("; ")
+            )
+        })
     }
     /// Warning when tasks fell back from activity-ID matching (e.g. an alias was deleted in one file).
     pub fn warning(&self) -> Option<String> {
@@ -217,7 +245,12 @@ pub fn compare(old: &Plan, new: &Plan, by: MatchBy) -> Comparison {
         match by {
             MatchBy::ActivityId if !k.starts_with("uid:") => c.coverage.by_activity_id += 1,
             MatchBy::Name => c.coverage.by_name += 1,
-            _ => c.coverage.by_uid += 1,
+            _ => {
+                c.coverage.by_uid += 1;
+                if !o.name.trim().eq_ignore_ascii_case(n.name.trim()) {
+                    c.coverage.name_mismatches.push(NameMismatch { key: k.clone(), old_name: o.name.clone(), new_name: n.name.clone() });
+                }
+            }
         }
         let mut ch = Vec::new();
         let mut push = |field: &str, old: String, new: String, delta: Option<f64>| {
@@ -273,7 +306,7 @@ pub fn to_text(c: &Comparison) -> String {
     );
     s += &format!("added {}, removed {}, changed {}, unchanged {}\n", c.added.len(), c.removed.len(), c.changed.len(), c.unchanged);
     s += &format!("{}\n", c.coverage.summary(&c.matched_by));
-    if let Some(w) = c.coverage.warning() {
+    for w in [c.coverage.warning(), c.coverage.name_warning()].into_iter().flatten() {
         s += &format!("{w}\n");
     }
     for t in &c.added {
@@ -337,7 +370,11 @@ pub fn to_html(c: &Comparison, old_name: &str, new_name: &str) -> String {
         esc(new_name),
         c.matched_by,
         esc(&c.coverage.summary(&c.matched_by)),
-        c.coverage.warning().map(|w| format!("<p class=\"warn\">{}</p>", esc(&w))).unwrap_or_default(),
+        [c.coverage.warning(), c.coverage.name_warning()]
+            .into_iter()
+            .flatten()
+            .map(|w| format!("<p class=\"warn\">{}</p>", esc(&w)))
+            .collect::<String>(),
         c.finish_slip_days.map(|d| format!("{d:+}")).unwrap_or_else(|| "–".into()),
         c.added.len(),
         c.removed.len(),

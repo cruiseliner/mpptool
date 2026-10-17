@@ -171,6 +171,9 @@ start, finish (with the shift in working days), duration, % complete, milestone 
 (type and lag), plus the movement of the project finish. Every report also says how many matched tasks were keyed by
 activity ID versus UID (`matched 41 by activity_id, 2 by uid (fallback)`; JSON `coverage`) and warns when tasks without
 an activity ID fell back to UID matching, which is how a deleted alias shows up (as a task removed and re-added).
+It also flags UID-matched pairs whose names differ (case and surrounding spaces ignored), the usual sign of mis-pairing
+after a re-save renumbered UIDs (JSON `coverage.name_mismatches`). `--strict` makes either finding exit with code 1
+after the report is written; otherwise they are warnings and the exit code is 0.
 
 `variance` lists every task with a baseline: baseline vs current dates (actual dates when the task has
 them), start and finish slip in working days of the project calendar, and duration variance. When the file has baseline costs
@@ -404,7 +407,16 @@ Uncertainty sidecar: 2 task(s) covered, 1 fell back to --opt/--pess, 1 sidecar r
 ```
 
 `--json` carries the same data in `uncertainty_coverage` (`tasks_covered`, `fallback_tasks`, `unmatched_rows`).
-Rows that match no task are reported, not fatal.
+Rows that match no task are reported, not fatal, and the JSON lists are complete (the text report shows 10 of each).
+
+Key rules: activity IDs and names match after trimming whitespace, case-insensitively, and nothing looser. Under an
+`activity_id` header a key is only an activity ID (use a `row` column or `#N` for row numbers). A key that looks like a
+plan ID with lost leading zeros (`A50` for `A0050`) or a prefix stripped by Excel (`50`) is reported as
+`did you mean A0050? (not applied)`. Two sidecar rows that hit the same task are an error that lists the lines. An
+activity ID used by several tasks in the plan is a warning, and a sidecar row keyed by it is an error (key by `row`).
+
+`--strict` exits with code 1 after printing the report when any task fell back to `--opt`/`--pess` or any sidecar row
+matched no task. Use it in scripts to stop on a stale sidecar.
 
 ### Status updates (progress.csv)
 

@@ -80,6 +80,7 @@ PY
   && pass "compare --match activity-id survives re-save" || fail "activity IDs lost after re-save"
 "$B" compare "$T/ai.xml" "$T/ai2.xml" | grep -q 'matched 3 by activity_id, 0 by uid (fallback)' \
   && pass "compare reports match coverage (3 by activity ID, 0 UID fallback)" || fail "compare coverage line missing"
+"$B" compare --strict "$T/ai.xml" "$T/ai2.xml" >/dev/null 2>&1 && pass "compare --strict passes on re-saved file" || fail "compare --strict failed on re-save"
 
 # 9. EVM: EAC forms, TCPI, earned schedule present (needs a cost-loaded baseline; uses the repo fixture when present).
 EVX="$here/fixtures/status.xml"

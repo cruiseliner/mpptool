@@ -114,6 +114,9 @@ enum Cmd {
         /// Uncertainty sidecar CSV keyed by activity_id (or id/row, or name): uncertainty class and/or optimistic,pessimistic days. Works on imported .mpp/.xer/XML
         #[arg(long)]
         uncertainty: Option<PathBuf>,
+        /// With --uncertainty: exit 1 (after printing the report) if any task fell back to --opt/--pess or any sidecar row matched no task
+        #[arg(long)]
+        strict: bool,
         #[command(flatten)]
         cal: CalArgs,
         #[command(flatten)]
@@ -194,6 +197,9 @@ enum Cmd {
         /// How to match tasks between the two files
         #[arg(long = "match", value_enum, default_value_t = MatchArg::Auto)]
         match_by: MatchArg,
+        /// Exit 1 (after writing the report) if any task fell back from activity-ID to UID matching or a UID-matched pair changed name
+        #[arg(long)]
+        strict: bool,
     },
     /// Baseline vs current/actual slip per task, with earned value (PV, EV, AC, SPI, CPI, SV, CV) when costs exist
     Variance {
@@ -523,7 +529,7 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
-        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, risks, classes, uncertainty, cal, prog } => {
+        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, risks, classes, uncertainty, strict, cal, prog } => {
             let (mut rows, spec, sopts) = load_input(&input, &cal, &prog, &opts, engine)?;
             let mut opts =
                 mpptool::risk::RiskOptions { runs, seed, opt_factor, pess_factor, status_date: sopts.status_date, ..Default::default() };
@@ -546,11 +552,15 @@ fn run(cli: Cli) -> Result<(), String> {
                 opts.events = mpptool::risk::parse_events(&text).map_err(|e| format!("{}: {e}", f.display()))?;
             }
             let mut r = mpptool::risk::simulate(&rows, chrono::Local::now().date_naive(), &spec, &opts)?;
+            let stale = coverage.as_ref().filter(|c| c.is_stale()).map(|c| (c.fallback_tasks.len(), c.unmatched_rows.len()));
             r.uncertainty_coverage = coverage;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?);
             } else {
                 print!("{}", mpptool::risk::render_text(&r));
+            }
+            if let (true, Some((f, u))) = (strict, stale) {
+                return Err(format!("--strict: {f} task(s) fell back to --opt/--pess, {u} sidecar row(s) matched no task"));
             }
             Ok(())
         }
@@ -642,7 +652,7 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Compare { old, new, format, out, match_by } => {
+        Cmd::Compare { old, new, format, out, match_by, strict } => {
             let (a, b) = (read(&old)?, read(&new)?);
             let by = match match_by {
                 MatchArg::Auto => mpptool::compare::MatchBy::Auto,
@@ -651,8 +661,10 @@ fn run(cli: Cli) -> Result<(), String> {
                 MatchArg::Name => mpptool::compare::MatchBy::Name,
             };
             let c = mpptool::compare::compare(&a, &b, by);
-            if let (Some(w), false) = (c.coverage.warning(), matches!(format, ReportFormat::Text) && out.is_none()) {
-                eprintln!("{w}");
+            if !(matches!(format, ReportFormat::Text) && out.is_none()) {
+                for w in [c.coverage.warning(), c.coverage.name_warning()].into_iter().flatten() {
+                    eprintln!("{w}");
+                }
             }
             let doc = match format {
                 ReportFormat::Text => mpptool::compare::to_text(&c),
@@ -665,6 +677,13 @@ fn run(cli: Cli) -> Result<(), String> {
                     eprintln!("wrote {} ({} added, {} removed, {} changed)", o.display(), c.added.len(), c.removed.len(), c.changed.len());
                 }
                 None => print!("{doc}"),
+            }
+            if strict && c.coverage.strict_failures() > 0 {
+                return Err(format!(
+                    "--strict: {} task(s) fell back to UID matching, {} UID-matched task(s) changed name",
+                    c.coverage.fallback(),
+                    c.coverage.name_mismatches.len()
+                ));
             }
             Ok(())
         }

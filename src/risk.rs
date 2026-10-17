@@ -90,6 +90,19 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<SidecarCoverage
     let mut n = 0;
     let mut hit = vec![false; rows.len()];
     let mut unmatched = Vec::new();
+    let key_col = ck.map(|c| hdr[c].as_str()).unwrap_or("");
+    // Activity IDs match after trimming, case-insensitively; nothing looser matches silently.
+    let mut plan_ids: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        if let Some(a) = r.activity_id.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            plan_ids.entry(a.to_uppercase()).or_default().push(i);
+        }
+    }
+    let mut duplicate_plan_ids: Vec<String> = plan_ids.iter().filter(|(_, v)| v.len() > 1).map(|(k, _)| k.clone()).collect();
+    duplicate_plan_ids.sort();
+    let mut seen_line: Vec<Option<usize>> = vec![None; rows.len()];
+    let mut dups = Vec::new();
+    let mut near = Vec::new();
     for (k, rec) in rdr.records().enumerate() {
         let line = k + 2;
         let rec = rec.map_err(|e| format!("uncertainty line {line}: {e}"))?;
@@ -98,15 +111,36 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<SidecarCoverage
             continue;
         }
         let i = match (g(ck), g(cn)) {
-            (key, _) if !key.is_empty() => match from_csv::resolve_ref(rows, &key) {
-                Ok(i) => i,
-                Err(_) => {
-                    unmatched.push(key);
-                    continue;
+            (key, _) if !key.is_empty() => {
+                let up = key.to_uppercase();
+                let by_id = (key_col != "row").then(|| plan_ids.get(&up)).flatten();
+                match by_id {
+                    Some(v) if v.len() > 1 => {
+                        return Err(format!(
+                            "uncertainty line {line}: activity ID '{key}' is used by several tasks (rows {}); fix the plan or key by row",
+                            v.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                    Some(v) => v[0],
+                    None => {
+                        let row = key.strip_prefix('#').unwrap_or(if key_col == "activity_id" { "" } else { &key });
+                        match row.parse::<usize>().ok().filter(|i| *i >= 1 && *i <= rows.len()) {
+                            Some(r) => r - 1,
+                            None => {
+                                let c = near_misses_for(&key, &plan_ids);
+                                if !c.is_empty() {
+                                    near.push(NearMiss { key: key.clone(), candidates: c });
+                                }
+                                unmatched.push(key);
+                                continue;
+                            }
+                        }
+                    }
                 }
-            },
+            }
             (_, nm) if !nm.is_empty() => {
-                let hits: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| r.name.eq_ignore_ascii_case(&nm)).map(|(i, _)| i).collect();
+                let hits: Vec<usize> =
+                    rows.iter().enumerate().filter(|(_, r)| r.name.trim().eq_ignore_ascii_case(&nm)).map(|(i, _)| i).collect();
                 match hits.as_slice() {
                     [i] => *i,
                     [] => {
@@ -118,6 +152,11 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<SidecarCoverage
             }
             _ => continue,
         };
+        if let Some(first) = seen_line[i] {
+            dups.push(format!("lines {first} and {line} both set task {} '{}'", i + 1, rows[i].name));
+            continue;
+        }
+        seen_line[i] = Some(line);
         let num = |c: Option<usize>, what: &str| -> Result<Option<f64>, String> {
             match g(c).as_str() {
                 "" => Ok(None),
@@ -149,6 +188,9 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<SidecarCoverage
         hit[i] = true;
         n += 1;
     }
+    if !dups.is_empty() {
+        return Err(format!("duplicate sidecar keys: {}", dups.join("; ")));
+    }
     // Tasks that get blanket --opt/--pess ranges: not covered by the sidecar, no own estimate or class, real work.
     let fallback = rows
         .iter()
@@ -161,7 +203,40 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<SidecarCoverage
         tasks_covered: hit.iter().filter(|h| **h).count(),
         fallback_tasks: fallback,
         unmatched_rows: unmatched,
+        near_misses: near,
+        duplicate_plan_ids,
     })
+}
+
+/// Canonical form for near-miss detection: upper case, leading zeros of the numeric tail dropped (`A0050` → `A50`).
+fn canon_id(s: &str) -> (String, Option<u64>) {
+    let u = s.trim().to_uppercase();
+    let p = u.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    (u[..p].to_string(), u[p..].parse().ok())
+}
+
+/// Plan activity IDs a stale or Excel-mangled key probably meant: same prefix and number (leading zeros lost), or a
+/// numeric-only key whose number matches an ID's numeric tail (Excel stripped the prefix).
+fn near_misses_for(key: &str, plan_ids: &HashMap<String, Vec<usize>>) -> Vec<String> {
+    let (kp, kn) = canon_id(key);
+    let Some(kn) = kn else { return vec![] };
+    let mut v: Vec<String> = plan_ids
+        .keys()
+        .filter(|id| {
+            let (p, n) = canon_id(id);
+            n == Some(kn) && (p == kp || kp.is_empty())
+        })
+        .cloned()
+        .collect();
+    v.sort();
+    v
+}
+
+/// A sidecar key that matched nothing but resembles plan activity IDs. Never applied automatically.
+#[derive(Debug, Serialize, Clone)]
+pub struct NearMiss {
+    pub key: String,
+    pub candidates: Vec<String>,
 }
 
 /// Coverage of an uncertainty sidecar (see [`apply_uncertainty`]).
@@ -173,8 +248,12 @@ pub struct SidecarCoverage {
     pub tasks_covered: usize,
     /// Tasks with duration that fell back to the blanket --opt/--pess range.
     pub fallback_tasks: Vec<CoverageTask>,
-    /// Sidecar keys (activity ID, row or name) that matched no task.
+    /// Sidecar keys (activity ID, row or name) that matched no task. Complete list (the text report caps at 10).
     pub unmatched_rows: Vec<String>,
+    /// Unmatched keys that look like a plan activity ID with lost leading zeros or prefix.
+    pub near_misses: Vec<NearMiss>,
+    /// Activity IDs used by more than one task in the plan (rows keyed by them are rejected).
+    pub duplicate_plan_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -212,8 +291,15 @@ impl SidecarCoverage {
             }
             s += &format!("  WARNING: {} sidecar row(s) match no task (stale?): {}\n", self.unmatched_rows.len(), v.join(", "));
         }
+        for m in &self.near_misses {
+            s += &format!("  WARNING: sidecar key '{}' matches no task; did you mean {}? (not applied)\n", m.key, m.candidates.join(" / "));
+        }
+        if !self.duplicate_plan_ids.is_empty() {
+            s += &format!("  WARNING: activity ID(s) used by several tasks in the plan: {}\n", self.duplicate_plan_ids.join(", "));
+        }
         s
     }
+    /// True when `--strict` should fail: a task fell back to --opt/--pess or a sidecar row matched nothing.
     pub fn is_stale(&self) -> bool {
         !self.fallback_tasks.is_empty() || !self.unmatched_rows.is_empty()
     }
@@ -1054,5 +1140,29 @@ mod event_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn sidecar_keys_normalize_and_report_near_misses() {
+        let plan = "activity_id,name,duration_days\nA0050,Dig,5\nA0060,Pour,5\nB70,Cure,3\nX1,Spare,2\nX2,Spare 2,2\n";
+        let mut rows = parse_rows(plan).unwrap();
+        rows[4].activity_id = Some("x1".into()); // imported plans can carry duplicate IDs (case-insensitively)
+        // Trim + case-insensitive IDs and names match; lost leading zeros / prefix do not, but are reported.
+        let cov = apply_uncertainty(&mut rows, "activity_id,name,uncertainty\n  a0050 ,,vendor\n,  pour ,labor\nA50,,fixed\n70,,fixed\n")
+            .unwrap();
+        assert_eq!(rows[0].uncertainty.as_deref(), Some("vendor"));
+        assert_eq!(rows[1].uncertainty.as_deref(), Some("labor"));
+        assert_eq!(rows[2].uncertainty, None, "numeric-only key is not a row number under an activity_id header");
+        assert_eq!(cov.unmatched_rows, vec!["A50", "70"]);
+        assert_eq!(cov.near_misses.len(), 2);
+        assert_eq!(cov.near_misses[0].candidates, vec!["A0050"]);
+        assert_eq!(cov.near_misses[1].candidates, vec!["B70"]);
+        assert_eq!(cov.duplicate_plan_ids, vec!["X1"]);
+        assert!(cov.render().contains("did you mean A0050?"));
+        // Duplicate sidecar keys (after normalization) are an error listing them.
+        let e = apply_uncertainty(&mut rows, "activity_id,uncertainty\nA0050,vendor\na0050 ,fixed\nB70,labor\nb70,labor\n").unwrap_err();
+        assert!(e.contains("lines 2 and 3") && e.contains("lines 4 and 5"), "{e}");
+        // A sidecar row keyed by a duplicated plan activity ID is ambiguous.
+        assert!(apply_uncertainty(&mut rows, "activity_id,uncertainty\nX1,vendor\n").unwrap_err().contains("several tasks"));
     }
 }

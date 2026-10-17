@@ -530,3 +530,76 @@ fn compare_counts_activity_id_fallbacks_when_an_alias_is_lost() {
     let ok = run_ok(&["compare", xs, xs]);
     assert!(ok.contains("matched 3 by activity_id, 0 by uid (fallback)") && !ok.contains("WARNING"), "{ok}");
 }
+
+#[test]
+fn strict_flags_and_complete_json_lists() {
+    // 15 new tasks not in the sidecar and 12 orphan rows: JSON lists are complete, text caps at 10.
+    let mut plan = String::from("activity_id,name,start,duration_days,predecessors\nA1,First,2026-06-01,2,\n");
+    for i in 2..=16 {
+        plan += &format!("A{i},Task {i},,1,A{}\n", i - 1);
+    }
+    let c = tmp("strict.csv");
+    std::fs::write(&c, plan).unwrap();
+    let x = tmp("strict.xml");
+    run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap()]);
+    let mut side = String::from("activity_id,uncertainty\nA1,vendor\n");
+    for i in 0..12 {
+        side += &format!("Z{i},fixed\n");
+    }
+    let s = tmp("strict-side.csv");
+    std::fs::write(&s, side).unwrap();
+    let (xs, ss) = (x.to_str().unwrap(), s.to_str().unwrap());
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["risk", xs, "--uncertainty", ss, "--json", "--runs", "100"])).unwrap();
+    assert_eq!(v["uncertainty_coverage"]["fallback_tasks"].as_array().unwrap().len(), 15);
+    assert_eq!(v["uncertainty_coverage"]["unmatched_rows"].as_array().unwrap().len(), 12);
+    let t = run_ok(&["risk", xs, "--uncertainty", ss, "--runs", "100"]);
+    assert!(t.contains("… 5 more") && t.contains("… 2 more"), "{t}");
+    let out = bin().args(["risk", xs, "--uncertainty", ss, "--runs", "100", "--strict"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Uncertainty sidecar:"), "report still printed");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--strict: 15 task(s) fell back"));
+    // A complete sidecar passes --strict.
+    let full = tmp("strict-full.csv");
+    std::fs::write(&full, (1..=16).fold(String::from("activity_id,uncertainty\n"), |a, i| a + &format!("A{i},labor\n"))).unwrap();
+    run_ok(&["risk", xs, "--uncertainty", full.to_str().unwrap(), "--runs", "100", "--strict"]);
+    // compare --strict: clean pair passes, lost alias fails.
+    run_ok(&["compare", "--strict", xs, xs]);
+    let t = std::fs::read_to_string(&x).unwrap().replacen("<Value>A16</Value>", "<Value></Value>", 1);
+    let y = tmp("strict-b.xml");
+    std::fs::write(&y, t).unwrap();
+    let out = bin().args(["compare", "--strict", xs, y.to_str().unwrap()]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--strict: 1 task(s) fell back to UID matching"));
+}
+
+#[test]
+fn compare_flags_uid_pairs_whose_names_differ() {
+    let c = tmp("mispair.csv");
+    std::fs::write(&c, "name,start,duration_days,predecessors\nDig,2026-06-01,5,\nPour,,5,1\nCure,,3,2\n").unwrap();
+    let x = tmp("mispair-a.xml");
+    run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap()]);
+    // Re-save renumbered UIDs so UID 2 is now "Cure" and UID 3 is "Pour".
+    let t = std::fs::read_to_string(&x)
+        .unwrap()
+        .replace("<Name>Pour</Name>", "<Name>@@</Name>")
+        .replace("<Name>Cure</Name>", "<Name>Pour</Name>")
+        .replace("<Name>@@</Name>", "<Name>Cure</Name>");
+    let y = tmp("mispair-b.xml");
+    std::fs::write(&y, t).unwrap();
+    let (xs, ys) = (x.to_str().unwrap(), y.to_str().unwrap());
+    let out = run_ok(&["compare", xs, ys]);
+    assert!(out.contains("WARNING: 2 UID-matched task(s) changed name"), "{out}");
+    assert!(out.contains("'Pour' → 'Cure'"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["compare", "--format", "json", xs, ys])).unwrap();
+    assert_eq!(v["coverage"]["name_mismatches"].as_array().unwrap().len(), 2);
+    let h = tmp("mispair.html");
+    run_ok(&["compare", "--format", "html", "-o", h.to_str().unwrap(), xs, ys]);
+    assert!(std::fs::read_to_string(&h).unwrap().contains("changed name"));
+    let st = bin().args(["compare", "--strict", xs, ys]).output().unwrap();
+    assert_eq!(st.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&st.stderr).contains("2 UID-matched task(s) changed name"));
+    // Name-only case changes are not flagged.
+    let z = tmp("mispair-c.xml");
+    std::fs::write(&z, std::fs::read_to_string(&x).unwrap().replace("<Name>Dig</Name>", "<Name>DIG </Name>")).unwrap();
+    assert!(!run_ok(&["compare", xs, z.to_str().unwrap()]).contains("changed name"));
+}

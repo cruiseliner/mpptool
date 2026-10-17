@@ -4,6 +4,10 @@
 - `risk --uncertainty`: prints sidecar coverage (tasks covered, tasks that fell back to `--opt`/`--pess`, sidecar rows that matched no task), with a WARNING listing up to 10 of each when the sidecar looks stale. `--json` adds `uncertainty_coverage` (and the warning goes to stderr).
 - `risk --uncertainty`: a sidecar row whose activity ID/row/name matches no task is now reported as unmatched instead of aborting the run. Malformed rows (bad numbers, optimistic > pessimistic, ambiguous names) still fail.
 - `compare`: reports how many matched tasks were keyed by activity ID vs UID (or name) in text, HTML and JSON (`coverage`), and warns when tasks without an activity ID fell back to UID matching (e.g. a deleted alias). An empty activity ID now counts as missing.
+- `risk --strict` / `compare --strict`: exit 1 (after printing the report) when the sidecar left any task on `--opt`/`--pess` or had unmatched rows, or when `compare` had UID fallbacks or UID-matched pairs whose names differ. Without `--strict` these are warnings and the exit code is 0.
+- Sidecar keys: activity IDs and names match after trimming, case-insensitively, and nothing looser. Under an `activity_id` header a numeric-only key is no longer read as a row number (use `row` or `#N`). Keys that look like a plan ID with lost leading zeros (`A50` vs `A0050`) or a stripped prefix (`50`) are reported as near misses and not applied. Two sidecar rows that hit the same task are an error listing the lines. Activity IDs used by several tasks in the plan are a warning, and a sidecar row keyed by one is an error.
+- `compare`: UID-matched pairs whose names differ (ignoring case and spaces) are flagged as likely mis-pairings after a re-save renumbered UIDs (text, HTML, JSON `coverage.name_mismatches`).
+- JSON `uncertainty_coverage` lists are complete; only the text report caps at 10.
 - Library: `risk::apply_uncertainty` returns `SidecarCoverage`; `RiskReport.uncertainty_coverage`; `compare::{MatchCoverage, FallbackTask}`, `Comparison.coverage`.
 
 ## v0.10.0 — EAC forms, TCPI, earned schedule, uncertainty sidecar, re-save-safe activity IDs
