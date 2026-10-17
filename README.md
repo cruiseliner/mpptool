@@ -341,6 +341,55 @@ Both commands work on every format mpptool reads (`.mpp`, `.mpx`, MSPDI `.xml`, 
 
 Each run samples every task's duration from a PERT-beta distribution (optimistic, most likely = `duration_days`, pessimistic) and reschedules the network with the same links, lags, start constraints and calendar as `from-csv`. Optimistic/pessimistic come from the CSV columns, or default to 0.8× and 1.5× the duration. The report gives the deterministic finish, the probability of meeting it, the mean and P10/P50/P80/P90 finish dates, and each task's **criticality index**: the share of runs in which it was on the driving path to the finish. Tasks that are not critical in the deterministic plan but have a high criticality index are hidden schedule risk. The random generator is built in, so the same seed gives the same result on every platform.
 
+#### Uncertainty classes, risk events and sensitivity
+
+Add an `uncertainty` column to the CSV (or `optimistic`/`pessimistic` columns, which win) so each task gets a distribution that matches its kind of uncertainty. Built-in classes, as (optimistic, pessimistic) multiples of the most likely duration. These are planning defaults, not industry statistics, so calibrate them on your own history and override with `--class vendor=0.95,2.5`:
+
+| Class | O | P | Use for |
+|---|---|---|---|
+| `labor` | 0.85 | 1.4 | crew work driven by production rates |
+| `equipment` | 0.9 | 1.5 | equipment-driven work |
+| `design` | 0.8 | 1.6 | design, engineering, reviews |
+| `vendor` | 0.95 | 2.0 | vendor-quoted lead times, fabrication, delivery |
+| `permit` | 0.9 | 2.0 | permits, AHJ reviews, work by others |
+| `weather` | 0.9 | 1.8 | weather-exposed exterior work |
+| `fixed` | 1.0 | 1.0 | concrete cure, notice periods |
+
+Tasks without a class use `--opt`/`--pess`. Discrete risks from the RAID log go in a CSV via `--risks risks.csv`:
+
+```csv
+id,name,probability,min_days,likely_days,max_days,tasks
+R1,Switchgear ships late,30%,5,10,20,5
+R2,Inspector backlog (common cause),0.25,2,3,6,15;16
+```
+
+In each run, an event fires with its probability. When it fires, one impact is sampled and added to **every** linked task (row numbers; a summary row means all of its tasks), so one cause hitting several tasks is modelled as one correlated hit. The report adds each task's **sensitivity** (Pearson correlation of its sampled duration with the finish, shown as a tornado list) and, for each event, its hit rate and mean finish impact (mean finish when it fires minus when it does not).
+
+### Status updates (progress.csv)
+
+```bash
+mpptool from-csv plan.csv update.xml --progress progress.csv --status-date 2026-10-23
+mpptool cpm  plan.csv --progress progress.csv --status-date 2026-10-23
+mpptool risk plan.csv --progress progress.csv --status-date 2026-10-23
+```
+
+```csv
+id,actual_start,actual_finish,remaining_days,percent_complete
+3,2026-10-19,2026-10-21,,100
+4,2026-10-22,,,50
+7,2026-10-20,,4,
+```
+
+`id` is the plan row number (or use a `name` column). Finished tasks keep their actual dates. In-progress tasks keep their actual start, and their remaining work (`remaining_days`, else duration × (1 − % complete)) is scheduled after the status date. Unstarted work never starts before the status date. The XML carries actual start/finish, % complete and the status date, so `check` tests 9/11/14 and `variance` work on the update. Imported schedules (.mpp/.xer/…) bring their own actuals and status date.
+
+### Resource leveling (within float)
+
+`from-csv --level` (and `cpm --level`) delays tasks whose named resources are double-booked, in early-start order, but only within their total float, so the project finish never moves. Each resource is one unit, busy with one task at a time. Leveled tasks get an SNET constraint at their new start and a `[leveled by mpptool]` note. Conflicts with no float left are listed, not resolved: add crew, resequence, or accept a later finish. This is a simple serial leveler, not Project's or P6's leveling engine (no partial units, splitting or priorities).
+
+### DCMA options
+
+`check --exclude-endpoints` stops check 1 counting the project start milestone (no predecessors) and finish milestone (no successors). `check --thresholds logic=10,lags=10,fs=85,hard=5,high_float=60,high_float_pct=5,high_duration=30,high_duration_pct=5,missed=5,cpli=0.9,bei=0.9` overrides any threshold. The defaults are DCMA's.
+
 ## What carries over in `to-xml`
 
 | Carried over | Not carried over (yet) |
@@ -365,7 +414,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - Primavera: these are not mapped: secondary constraints, activity codes, UDFs, steps, expenses, baselines (P6 baselines live in separate projects), resource curves, and level-of-effort / WBS-summary semantics (both are read as ordinary tasks). Durations are at-completion hours, not recalculated against calendars. Relationships to activities in *other* projects are dropped. XER from P6 versions older than 6 may use an older calendar format that is not parsed; those calendars fall back to Mon–Fri 08:00–17:00.
 - The `from-csv` scheduler is intentionally simple. It uses one project calendar (no task or resource calendars), has no resource leveling, and only supports SNET constraints. Overtime is modelled as extra working time on the calendar; separate overtime work and overtime cost rates are not written.
 - `cpm`/`risk` on imported files use only the project calendar and SNET/MSO constraints (see above).
-- `risk` samples durations independently (no correlation between tasks) and does not model discrete risk events.
+- `risk` samples task durations independently (risk events give common-cause correlation; there is no general correlation matrix).
 - Duration months are converted as 20 working days.
 - `check` test 12 (critical path test) is a static continuity check, not DCMA's delay-and-reschedule test.
 - `compare`/`variance` count slip in Mon–Fri working days and ignore holidays; PV assumes work spread evenly over the baseline, not the timephased baseline.
@@ -383,7 +432,9 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - [x] Resource loading (`resources-load`) and Excel/Smartsheet export (`to-xlsx`) — v0.5.0
 - [x] Kanban board (`board`) and portfolio dashboard (`portfolio`) — v0.6.0
 - [x] Holiday calendars, weekend/overtime work patterns, float in XML, Monte Carlo `risk` — v0.7.0
-- [ ] Holiday-aware `compare`/`variance` slip; regional holiday tables; correlated risk and risk events
+- [x] Risk events, uncertainty classes, sensitivity, progress updates, leveling within float, DCMA options — v0.8.0
+- [ ] XER writer (next: TASK/TASKPRED/CALENDAR/PROJWBS tables)
+- [ ] Holiday-aware `compare`/`variance` slip; regional holiday tables; correlation between task durations
 - [ ] Primavera: activity codes/UDFs as custom fields, baselines, expenses, cross-project links, writing XER
 - [ ] Code-signed Windows binaries; winget / Homebrew packages
 

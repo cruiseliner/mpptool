@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.0 — risk events, progress updates, leveling, DCMA options
+- `risk`: discrete risk events from a RAID CSV (`--risks`: id, name, probability, min/likely/max impact days, linked tasks). One sampled impact hits every linked task (common cause). Per-task uncertainty classes (`uncertainty` column: labor, equipment, design, vendor, permit, weather, fixed; `--class name=o,p` overrides). Sensitivity (duration–finish correlation, tornado list) and per-event hit rate and mean finish impact in text and `--json`.
+- Status updates: `--progress progress.csv --status-date D` on `from-csv`, `cpm` and `risk` (actual start/finish, remaining days, % complete). Remaining work is scheduled after the status date, and actuals, % complete and the status date are written to the XML. Imported schedules carry their own progress and status date into `cpm`/`risk`.
+- `from-csv --level` / `cpm --level`: serial resource leveling within total float. Leveled tasks get an SNET and a note; unresolved conflicts are reported.
+- `check --exclude-endpoints` (DCMA #1 ignores the start/finish milestones) and `check --thresholds key=value,…`.
+- Library: `from_csv::schedule_full`, `ScheduleOptions`, `apply_progress`; `risk::parse_events`, `RiskEvent`, `CLASSES`; `check::Thresholds`. `Row` gained progress and uncertainty fields (it now implements `Default`).
+- Not yet: XER writer (planned next).
+
 ## v0.7.0 — calendars, holidays, float and schedule risk
 - `from-csv` calendar options: `--holidays` with built-in tables for US federal holidays (observed Sat→Fri, Sun→Mon), CA, GB, AU, DE, FR, IN and MX; `--years`; `--holiday-file` for custom non-working or working days (shutdowns, overtime Saturdays, make-up days); `--work-days` (6- and 7-day weeks); `--hours` (shift hours, e.g. 10-hour days); repeatable `--day` overrides (e.g. `sat=07:00-12:00`); `--hours-per-day`; `--calendar-name`. Dates are rescheduled around non-working time and the calendar with its exceptions is written to the MSPDI XML. Without these options the output is unchanged.
 - `from-csv` now computes free slack, and MSPDI output writes `TotalSlack` and `FreeSlack` (also in `to-xml` when the source has total slack), so `check` no longer skips the float tests for CSV plans.
