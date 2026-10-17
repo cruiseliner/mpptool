@@ -1,0 +1,14 @@
+week,activity,responsible,committed,completed,reason
+2026-11-09,Demolition area A,GC Crew,yes,yes,
+2026-11-09,Saw cut slab,GC Crew,yes,yes,
+2026-11-09,Submit switchgear shop drawings,PM,yes,no,Submittal approval pending
+2026-11-09,Layout underground,Electrician,yes,yes,
+2026-11-16,Demolition area B,GC Crew,yes,yes,
+2026-11-16,Underground conduit run 1,Electrician,yes,no,Material delivery late
+2026-11-16,Underground plumbing,Plumber,yes,yes,
+2026-11-16,Trench inspection,PM,yes,no,Inspection backlog
+2026-11-16,Order lift,GC Crew,no,no,
+2026-11-23,Underground conduit run 2,Electrician,yes,yes,
+2026-11-23,Underground plumbing test,Plumber,yes,yes,
+2026-11-23,Backfill,GC Crew,yes,no,Prerequisite work not done
+2026-11-23,Slab pour prep,GC Crew,yes,yes,

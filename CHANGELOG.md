@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.11.0 — opportunities, JCL, Last Planner, takt/flowline, WSJF, throughput forecast
+- `risk --risks`: **opportunities**. A new optional `type` column (`threat`/`opportunity`), or negative impact days, marks an event that saves time. Its saving shortens every linked task, never below 0 days and never on a `fixed`-class task. Cost columns of an opportunity are savings. Impacts that straddle zero are rejected.
+- `risk`: threats and opportunities are reported separately, each with hit rate, mean finish impact and a new per-event **sensitivity** (correlation of the sampled impact with the finish). A new "Event effect" block schedules every run with no events, with threats only and with all events (common random numbers), and gives P50/P80 for each plus threat, opportunity and net effects. JSON adds `events[].type`, `events[].sensitivity`, `events[].mean_sampled_days`, `events[].fixed_tasks_protected` and `event_effect`. Risk files with threats only give the same percentiles as v0.10.1 for the same seed.
+- `risk --base-cost --cost-per-day [--target-date --target-cost]`: total-cost distribution (base + time-dependent rate × slip + event costs) and the **joint cost/schedule confidence level (JCL)**, at P50/P70/P80 and for the given targets. JSON `total_cost`.
+- New `lps`: Last Planner System metrics. PPC by week, rolling 4-week PPC and trend, PPC by responsible party, reasons-for-variance Pareto, constraint-log health (open, overdue, resolved on time, days to resolve, by owner and category), and with `--plan` a lookahead make-ready check of the schedule against open constraints.
+- New `takt`: takt plans (fixed rhythm, buffer wagons, overloaded-cell flags, train load) and flowline/line-of-balance schedules (`--mode flow`, continuous crews) on the working calendar. Writes an HTML flowline chart (`--html`) and a from-csv plan (`--plan-csv`) for MS Project XML.
+- New `wsjf`: WSJF ranking ((BV + TC + RR/OE) ÷ job size, with modified-Fibonacci checks), CD3 ranking from economic cost of delay (`--by-cd3`), cost of delay of the ranked order vs the input order, and a budget funding line.
+- New `forecast`: Monte Carlo throughput forecasting ("when will it be done?" at 50/70/85/95% and "how many by date"), from per-period counts or per-item finish dates, with a scope-growth/split range.
+- Smoke test: 29 checks (adds opportunities, threat-only reproducibility, JCL, `risk --strict`, `lps`, `takt`, `wsjf`, `forecast`).
+- Library: `risk::{EventKind, EventEffect, Scenario, TotalCost}`; `RiskEvent.kind`; `EventRisk.{kind, sensitivity, mean_sampled_days, fixed_tasks_protected}`; `RiskReport.{event_effect, total_cost}`; `RiskOptions.{base_cost, cost_per_day, target_date, target_cost}`; new modules `lps`, `takt`, `wsjf`, `forecast`.
+
 ## v0.10.1 — coverage counts for sidecars and compare
 - `risk --uncertainty`: prints sidecar coverage (tasks covered, tasks that fell back to `--opt`/`--pess`, sidecar rows that matched no task), with a WARNING listing up to 10 of each when the sidecar looks stale. `--json` adds `uncertainty_coverage` (and the warning goes to stderr).
 - `risk --uncertainty`: a sidecar row whose activity ID/row/name matches no task is now reported as unmatched instead of aborting the run. Malformed rows (bad numbers, optimistic > pessimistic, ambiguous names) still fail.

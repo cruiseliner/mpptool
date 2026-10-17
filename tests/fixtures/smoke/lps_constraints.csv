@@ -1,0 +1,6 @@
+id,activity_id,description,category,owner,raised,need_by,resolved
+C1,Permits and submittals,Building permit issued,permit,PM,2026-10-20,2026-11-06,2026-11-05
+C2,Long-lead procurement (switchgear),Shop drawings approved,submittal,Engineer,2026-10-26,2026-11-13,
+C3,Framing and drywall,RFI 7 wall type at dock,design,Architect,2026-11-02,2026-12-04,
+C4,Underground electrical and plumbing,Trench inspection booked,inspection,PM,2026-11-09,2026-11-18,2026-11-20
+C5,Electrical rough-in,Lift on site,equipment,GC Crew,2026-11-16,2026-12-01,

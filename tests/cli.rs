@@ -603,3 +603,74 @@ fn compare_flags_uid_pairs_whose_names_differ() {
     std::fs::write(&z, std::fs::read_to_string(&x).unwrap().replace("<Name>Dig</Name>", "<Name>DIG </Name>")).unwrap();
     assert!(!run_ok(&["compare", xs, z.to_str().unwrap()]).contains("changed name"));
 }
+
+fn smoke(name: &str) -> String {
+    fixture(&format!("smoke/{name}")).to_str().unwrap().to_string()
+}
+
+#[test]
+fn risk_opportunities_and_jcl_cli() {
+    let plan = smoke("warehouse_plan_v3.csv");
+    let opp = smoke("warehouse_opportunities.csv");
+    let j: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "risk",
+        &plan,
+        "--holidays",
+        "US",
+        "--risks",
+        &opp,
+        "--runs",
+        "1500",
+        "--base-cost",
+        "2400000",
+        "--cost-per-day",
+        "6500",
+        "--json",
+    ]))
+    .unwrap();
+    let ev = j["events"].as_array().unwrap();
+    assert_eq!(ev.iter().filter(|e| e["type"] == "opportunity").count(), 3);
+    assert!(ev.iter().all(|e| e["sensitivity"].is_number() && e["hit_rate"].is_number()));
+    assert!(j["event_effect"]["opportunity_p80_days"].as_f64().unwrap() <= 0.0);
+    assert!(j["total_cost"]["jcl"].as_f64().unwrap() > 0.0);
+    let text = run_ok(&["risk", &plan, "--holidays", "US", "--risks", &opp, "--runs", "500"]);
+    assert!(text.contains("Opportunities (") && text.contains("Event effect"));
+    // Targets need a cost model.
+    let out = bin().args(["risk", &plan, "--target-cost", "5"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn lps_takt_wsjf_forecast_cli() {
+    let l: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "lps",
+        &smoke("lps_workplan.csv"),
+        "--constraints",
+        &smoke("lps_constraints.csv"),
+        "--status-date",
+        "2026-11-27",
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(l["weeks"].as_array().unwrap().len(), 3);
+    assert_eq!(l["constraints"]["overdue"], 1);
+    let html = tmp("takt-cli.html");
+    let t: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "takt",
+        &smoke("takt_trades.csv"),
+        "--start",
+        "2027-01-04",
+        "--mode",
+        "flow",
+        "--html",
+        html.to_str().unwrap(),
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(t["mode"], "flow");
+    assert!(std::fs::read_to_string(&html).unwrap().contains("<svg"));
+    let w = run_ok(&["wsjf", &smoke("wsjf_portfolio.csv")]);
+    assert!(w.contains("Ranked by WSJF") && w.contains("Dock door"));
+    let f = run_ok(&["forecast", &smoke("throughput_weekly.csv"), "--remaining", "30", "--start", "2026-10-19", "--by", "2026-12-01"]);
+    assert!(f.contains("85%") && f.contains("How many by 2026-12-01"));
+}

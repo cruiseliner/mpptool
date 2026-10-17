@@ -1,0 +1,9 @@
+# Threats and opportunities for warehouse_plan_v3.csv (sample values for testing, not real RAID data).
+# type: threat or opportunity. Opportunity days are time saved (positive here; negative numbers mean the same).
+id,name,type,probability,min_days,likely_days,max_days,tasks,cost_min,cost_likely,cost_max
+R1,Switchgear ships late (vendor capacity),threat,30%,5,10,20,5,0,5000,15000
+R2,AHJ inspection backlog (common cause),threat,25%,2,3,6,15,0,2000,6000
+R3,Unforeseen underground conditions,threat,20%,2,4,8,8,5000,12000,30000
+O1,Prefabricated electrical rough-in assemblies,opportunity,50%,1,2,3,11,0,3000,6000
+O2,Early AHJ pre-inspection walk (shortens inspections),opportunity,40%,1,1,2,15,,,
+O3,Accelerated cure admixture (slab is fixed: not shortened),opportunity,60%,1,2,2,9,,,

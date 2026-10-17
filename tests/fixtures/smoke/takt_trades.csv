@@ -1,0 +1,22 @@
+# Warehouse office build-out: 5 trades through 4 zones (working days of work per zone).
+trade,zone,days
+Layout and framing,Zone 1,3
+Layout and framing,Zone 2,3
+Layout and framing,Zone 3,2
+Layout and framing,Zone 4,3
+MEP rough-in,Zone 1,4
+MEP rough-in,Zone 2,3
+MEP rough-in,Zone 3,3
+MEP rough-in,Zone 4,3
+Insulation and drywall,Zone 1,3
+Insulation and drywall,Zone 2,3
+Insulation and drywall,Zone 3,3
+Insulation and drywall,Zone 4,3
+Tape and paint,Zone 1,2
+Tape and paint,Zone 2,2
+Tape and paint,Zone 3,2
+Tape and paint,Zone 4,2
+Ceilings and trim-out,Zone 1,3
+Ceilings and trim-out,Zone 2,2
+Ceilings and trim-out,Zone 3,2
+Ceilings and trim-out,Zone 4,3
