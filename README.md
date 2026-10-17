@@ -168,7 +168,9 @@ both files have them (Primavera, or plans from `from-csv` with an `activity_id` 
 any MS Project custom text field whose alias is "Activity ID" (mpptool writes Text1), so they survive an MS Project
 re-save even if UIDs are renumbered or the field moves; use `--match activity-id` to insist on it. It reports tasks added and removed, and for matched tasks changes to name,
 start, finish (with the shift in working days), duration, % complete, milestone flag and predecessor links
-(type and lag), plus the movement of the project finish.
+(type and lag), plus the movement of the project finish. Every report also says how many matched tasks were keyed by
+activity ID versus UID (`matched 41 by activity_id, 2 by uid (fallback)`; JSON `coverage`) and warns when tasks without
+an activity ID fell back to UID matching, which is how a deleted alias shows up (as a task removed and re-added).
 
 `variance` lists every task with a baseline: baseline vs current dates (actual dates when the task has
 them), start and finish slip in working days of the project calendar, and duration variance. When the file has baseline costs
@@ -391,6 +393,18 @@ A1080,,4,9
 ```bash
 mpptool risk schedule.mpp --uncertainty uncertainty.csv --risks risks.csv
 ```
+
+The report states the sidecar's coverage, so a stale sidecar (tasks added in MS Project, rows for deleted tasks) is
+visible rather than silent:
+
+```text
+Uncertainty sidecar: 2 task(s) covered, 1 fell back to --opt/--pess, 1 sidecar row(s) matched no task
+  WARNING: sidecar does not cover 1 task(s): A30 Commission
+  WARNING: 1 sidecar row(s) match no task (stale?): A99
+```
+
+`--json` carries the same data in `uncertainty_coverage` (`tasks_covered`, `fallback_tasks`, `unmatched_rows`).
+Rows that match no task are reported, not fatal.
 
 ### Status updates (progress.csv)
 

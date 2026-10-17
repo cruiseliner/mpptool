@@ -531,16 +531,22 @@ fn run(cli: Cli) -> Result<(), String> {
                 let (k, v) = mpptool::risk::parse_class(c)?;
                 opts.classes.insert(k, v);
             }
+            let mut coverage = None;
             if let Some(f) = &uncertainty {
                 let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
-                let n = mpptool::risk::apply_uncertainty(&mut rows, &text).map_err(|e| format!("{}: {e}", f.display()))?;
-                eprintln!("uncertainty: {n} task(s) updated from {}", f.display());
+                let cov = mpptool::risk::apply_uncertainty(&mut rows, &text).map_err(|e| format!("{}: {e}", f.display()))?;
+                eprintln!("uncertainty: {} task(s) updated from {}", cov.tasks_covered, f.display());
+                if json && cov.is_stale() {
+                    eprint!("{}", cov.render());
+                }
+                coverage = Some(cov);
             }
             if let Some(f) = &risks {
                 let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
                 opts.events = mpptool::risk::parse_events(&text).map_err(|e| format!("{}: {e}", f.display()))?;
             }
-            let r = mpptool::risk::simulate(&rows, chrono::Local::now().date_naive(), &spec, &opts)?;
+            let mut r = mpptool::risk::simulate(&rows, chrono::Local::now().date_naive(), &spec, &opts)?;
+            r.uncertainty_coverage = coverage;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?);
             } else {
@@ -645,6 +651,9 @@ fn run(cli: Cli) -> Result<(), String> {
                 MatchArg::Name => mpptool::compare::MatchBy::Name,
             };
             let c = mpptool::compare::compare(&a, &b, by);
+            if let (Some(w), false) = (c.coverage.warning(), matches!(format, ReportFormat::Text) && out.is_none()) {
+                eprintln!("{w}");
+            }
             let doc = match format {
                 ReportFormat::Text => mpptool::compare::to_text(&c),
                 ReportFormat::Json => serde_json::to_string_pretty(&c).map_err(|e| e.to_string())? + "\n",

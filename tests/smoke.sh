@@ -63,6 +63,8 @@ a=$("$B" risk "$PLAN" --holidays US --risks "$RISKS" --json | js 'd["percentiles
 b=$("$B" risk "$T/us.xml" --risks "$RISKS" --uncertainty "$T/unc.csv" --json 2>/dev/null | js 'd["percentiles"]')
 c=$("$B" risk "$T/us.xml" --risks "$RISKS" --json | js 'd["percentiles"]')
 [ "$a" = "$b" ] && pass "uncertainty sidecar on XML = CSV classes" || fail "sidecar run differs from CSV run"
+um=$("$B" risk "$T/us.xml" --uncertainty "$T/unc.csv" --json 2>/dev/null | js 'len(d["uncertainty_coverage"]["unmatched_rows"])')
+[ "$um" = "0" ] && pass "sidecar coverage reported, 0 orphan rows" || fail "sidecar coverage: $um unmatched rows"
 [ "$a" != "$c" ] && pass "without sidecar, imported XML loses classes (documented)" || fail "imported XML unexpectedly kept classes"
 
 # 8. Activity IDs survive an MS Project-style re-save (field moved to Text5, UIDs renumbered).
@@ -76,6 +78,8 @@ open(sys.argv[2],'w').write(x)
 PY
 "$B" compare --match activity-id "$T/ai.xml" "$T/ai2.xml" | grep -q 'added 0, removed 0, changed 0, unchanged 3' \
   && pass "compare --match activity-id survives re-save" || fail "activity IDs lost after re-save"
+"$B" compare "$T/ai.xml" "$T/ai2.xml" | grep -q 'matched 3 by activity_id, 0 by uid (fallback)' \
+  && pass "compare reports match coverage (3 by activity ID, 0 UID fallback)" || fail "compare coverage line missing"
 
 # 9. EVM: EAC forms, TCPI, earned schedule present (needs a cost-loaded baseline; uses the repo fixture when present).
 EVX="$here/fixtures/status.xml"

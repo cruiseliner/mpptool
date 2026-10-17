@@ -465,7 +465,68 @@ fn risk_uncertainty_sidecar_on_imported_xml() {
     let inst = with["tasks"].as_array().unwrap().iter().find(|t| t["name"] == "Install").unwrap().clone();
     assert_eq!(inst["optimistic_days"], 4.0);
     assert_eq!(inst["pessimistic_days"], 8.0);
+    assert_eq!(with["uncertainty_coverage"]["tasks_covered"], 2);
+    assert_eq!(with["uncertainty_coverage"]["fallback_tasks"].as_array().unwrap().len(), 0);
+    assert!(without.get("uncertainty_coverage").is_none());
+    // Malformed sidecars still fail.
     let bad = tmp("unc-bad.csv");
-    std::fs::write(&bad, "activity_id,uncertainty\nZZ9,vendor\n").unwrap();
+    std::fs::write(&bad, "activity_id,optimistic,pessimistic\nA10,9,3\n").unwrap();
     assert!(!bin().args(["risk", xs, "--uncertainty", bad.to_str().unwrap()]).output().unwrap().status.success());
+}
+
+#[test]
+fn risk_reports_stale_sidecar_coverage() {
+    // Plan gained A30 after the sidecar was written; sidecar still lists the deleted A99.
+    let c = tmp("stale-plan.csv");
+    std::fs::write(
+        &c,
+        "activity_id,name,start,duration_days,predecessors\nA10,Order,2026-06-01,10,\nA20,Install,,5,A10\nA30,Commission,,3,A20\n",
+    )
+    .unwrap();
+    let x = tmp("stale-plan.xml");
+    run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap()]);
+    let s = tmp("stale-side.csv");
+    std::fs::write(&s, "activity_id,uncertainty\nA10,vendor\nA20,labor\nA99,fixed\n").unwrap();
+    let (xs, ss) = (x.to_str().unwrap(), s.to_str().unwrap());
+    let t = run_ok(&["risk", xs, "--uncertainty", ss, "--runs", "200"]);
+    assert!(t.contains("2 task(s) covered, 1 fell back to --opt/--pess, 1 sidecar row(s) matched no task"), "{t}");
+    assert!(t.contains("WARNING: sidecar does not cover 1 task(s): A30 Commission"), "{t}");
+    assert!(t.contains("match no task (stale?): A99"), "{t}");
+    let out = bin().args(["risk", xs, "--uncertainty", ss, "--runs", "200", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("WARNING"), "json mode warns on stderr");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let cov = &v["uncertainty_coverage"];
+    assert_eq!(cov["tasks_covered"], 2);
+    assert_eq!(cov["fallback_tasks"][0]["activity_id"], "A30");
+    assert_eq!(cov["unmatched_rows"], serde_json::json!(["A99"]));
+}
+
+#[test]
+fn compare_counts_activity_id_fallbacks_when_an_alias_is_lost() {
+    let c = tmp("alias.csv");
+    std::fs::write(&c, "activity_id,name,start,duration_days,predecessors\nA10,Dig,2026-06-01,5,\nA20,Pour,,5,A10\nA30,Cure,,3,A20\n")
+        .unwrap();
+    let x = tmp("alias-a.xml");
+    run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap()]);
+    // New file lost the activity ID of one task (alias value deleted).
+    let t = std::fs::read_to_string(&x).unwrap();
+    let pos = t.find("<Value>A30</Value>").expect("A30 value in XML");
+    let y = tmp("alias-b.xml");
+    std::fs::write(&y, format!("{}<Value></Value>{}", &t[..pos], &t[pos + "<Value>A30</Value>".len()..])).unwrap();
+    let (xs, ys) = (x.to_str().unwrap(), y.to_str().unwrap());
+    let out = run_ok(&["compare", "--match", "activity-id", xs, ys]);
+    assert!(out.contains("matched 2 by activity_id, 0 by uid (fallback)"), "{out}");
+    assert!(out.contains("WARNING: 0 task(s) in the old plan and 1 in the new plan"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&run_ok(&["compare", "--match", "activity-id", "--format", "json", xs, ys])).unwrap();
+    assert_eq!(v["coverage"]["by_activity_id"], 2);
+    assert_eq!(v["coverage"]["new_uid_fallback"], 1);
+    assert_eq!(v["coverage"]["fallback_tasks"][0]["name"], "Cure");
+    let h = tmp("alias.html");
+    run_ok(&["compare", "--match", "activity-id", "--format", "html", "-o", h.to_str().unwrap(), xs, ys]);
+    let html = std::fs::read_to_string(&h).unwrap();
+    assert!(html.contains("matched 2 by activity_id") && html.contains("class=\"warn\""));
+    // Intact files: everything by activity ID, no warning.
+    let ok = run_ok(&["compare", xs, xs]);
+    assert!(ok.contains("matched 3 by activity_id, 0 by uid (fallback)") && !ok.contains("WARNING"), "{ok}");
 }

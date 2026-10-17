@@ -75,7 +75,9 @@ pub struct RiskEvent {
 /// Apply an uncertainty sidecar CSV to rows (for imported schedules, whose files carry no three-point data).
 /// Key column: `activity_id`, `id` or `row` (activity ID, else 1-based row; see [`from_csv::resolve_ref`]) or `name`.
 /// Value columns: `uncertainty` (class), `optimistic`, `pessimistic` (days). Returns the number of rows changed.
-pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<usize, String> {
+/// Rows whose key matches no task are not an error (a stale sidecar is common after edits in MS Project); they are
+/// returned in [`SidecarCoverage::unmatched_rows`] together with the tasks the sidecar did not cover.
+pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<SidecarCoverage, String> {
     let mut rdr = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::All).comment(Some(b'#')).from_reader(text.as_bytes());
     let hdr: Vec<String> = rdr.headers().map_err(|e| format!("uncertainty CSV header: {e}"))?.iter().map(|h| h.to_lowercase()).collect();
     let col = |names: &[&str]| names.iter().find_map(|n| hdr.iter().position(|h| h == n));
@@ -86,6 +88,8 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<usize, String> 
     }
     let (cu, co, cp) = (col(&["uncertainty", "class"]), col(&["optimistic", "o"]), col(&["pessimistic", "p"]));
     let mut n = 0;
+    let mut hit = vec![false; rows.len()];
+    let mut unmatched = Vec::new();
     for (k, rec) in rdr.records().enumerate() {
         let line = k + 2;
         let rec = rec.map_err(|e| format!("uncertainty line {line}: {e}"))?;
@@ -94,12 +98,21 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<usize, String> 
             continue;
         }
         let i = match (g(ck), g(cn)) {
-            (key, _) if !key.is_empty() => from_csv::resolve_ref(rows, &key).map_err(|e| format!("uncertainty line {line}: {e}"))?,
+            (key, _) if !key.is_empty() => match from_csv::resolve_ref(rows, &key) {
+                Ok(i) => i,
+                Err(_) => {
+                    unmatched.push(key);
+                    continue;
+                }
+            },
             (_, nm) if !nm.is_empty() => {
                 let hits: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| r.name.eq_ignore_ascii_case(&nm)).map(|(i, _)| i).collect();
                 match hits.as_slice() {
                     [i] => *i,
-                    [] => return Err(format!("uncertainty line {line}: no task named '{nm}'")),
+                    [] => {
+                        unmatched.push(nm);
+                        continue;
+                    }
                     _ => return Err(format!("uncertainty line {line}: several tasks named '{nm}'; use activity_id")),
                 }
             }
@@ -133,9 +146,77 @@ pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<usize, String> 
         if p.is_some() {
             r.pessimistic = p;
         }
+        hit[i] = true;
         n += 1;
     }
-    Ok(n)
+    // Tasks that get blanket --opt/--pess ranges: not covered by the sidecar, no own estimate or class, real work.
+    let fallback = rows
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| !hit[*i] && r.dur > 0.0 && r.optimistic.is_none() && r.pessimistic.is_none() && r.uncertainty.is_none())
+        .map(|(i, r)| CoverageTask { id: i + 1, activity_id: r.activity_id.clone(), name: r.name.clone() })
+        .collect::<Vec<_>>();
+    Ok(SidecarCoverage {
+        rows_applied: n,
+        tasks_covered: hit.iter().filter(|h| **h).count(),
+        fallback_tasks: fallback,
+        unmatched_rows: unmatched,
+    })
+}
+
+/// Coverage of an uncertainty sidecar (see [`apply_uncertainty`]).
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct SidecarCoverage {
+    /// Sidecar rows applied to a task.
+    pub rows_applied: usize,
+    /// Distinct tasks that took values from the sidecar.
+    pub tasks_covered: usize,
+    /// Tasks with duration that fell back to the blanket --opt/--pess range.
+    pub fallback_tasks: Vec<CoverageTask>,
+    /// Sidecar keys (activity ID, row or name) that matched no task.
+    pub unmatched_rows: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CoverageTask {
+    pub id: usize,
+    pub activity_id: Option<String>,
+    pub name: String,
+}
+
+impl SidecarCoverage {
+    /// Coverage lines for the text report; the second line is a warning when the sidecar looks stale.
+    pub fn render(&self) -> String {
+        let mut s = format!(
+            "Uncertainty sidecar: {} task(s) covered, {} fell back to --opt/--pess, {} sidecar row(s) matched no task\n",
+            self.tasks_covered,
+            self.fallback_tasks.len(),
+            self.unmatched_rows.len()
+        );
+        if !self.fallback_tasks.is_empty() {
+            let mut v: Vec<String> = self
+                .fallback_tasks
+                .iter()
+                .take(10)
+                .map(|t| format!("{} {}", t.activity_id.clone().unwrap_or_else(|| format!("#{}", t.id)), t.name))
+                .collect();
+            if self.fallback_tasks.len() > 10 {
+                v.push(format!("… {} more", self.fallback_tasks.len() - 10));
+            }
+            s += &format!("  WARNING: sidecar does not cover {} task(s): {}\n", self.fallback_tasks.len(), v.join("; "));
+        }
+        if !self.unmatched_rows.is_empty() {
+            let mut v: Vec<String> = self.unmatched_rows.iter().take(10).cloned().collect();
+            if self.unmatched_rows.len() > 10 {
+                v.push(format!("… {} more", self.unmatched_rows.len() - 10));
+            }
+            s += &format!("  WARNING: {} sidecar row(s) match no task (stale?): {}\n", self.unmatched_rows.len(), v.join(", "));
+        }
+        s
+    }
+    pub fn is_stale(&self) -> bool {
+        !self.fallback_tasks.is_empty() || !self.unmatched_rows.is_empty()
+    }
 }
 
 /// Parse a RAID risk CSV: `id, name, probability, min_days, likely_days, max_days, tasks` (header required,
@@ -302,6 +383,9 @@ pub struct RiskReport {
     /// Risk-event cost summary (only when at least one event has cost columns).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_cost: Option<CostRisk>,
+    /// Uncertainty sidecar coverage (only with --uncertainty).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncertainty_coverage: Option<SidecarCoverage>,
 }
 
 /// xoshiro256** seeded through splitmix64: small, fast, and reproducible across platforms and versions.
@@ -597,6 +681,7 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
         tasks,
         events,
         event_cost,
+        uncertainty_coverage: None,
     })
 }
 
@@ -612,6 +697,9 @@ pub fn render_text(r: &RiskReport) -> String {
         r.deterministic_working_days,
         dt(&r.deterministic_finish)
     );
+    if let Some(c) = &r.uncertainty_coverage {
+        s += &c.render();
+    }
     if let Some(sd) = r.status_date {
         let _ = writeln!(s, "Status date {sd} (working days count from the project start)");
     }

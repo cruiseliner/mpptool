@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — coverage counts for sidecars and compare
+- `risk --uncertainty`: prints sidecar coverage (tasks covered, tasks that fell back to `--opt`/`--pess`, sidecar rows that matched no task), with a WARNING listing up to 10 of each when the sidecar looks stale. `--json` adds `uncertainty_coverage` (and the warning goes to stderr).
+- `risk --uncertainty`: a sidecar row whose activity ID/row/name matches no task is now reported as unmatched instead of aborting the run. Malformed rows (bad numbers, optimistic > pessimistic, ambiguous names) still fail.
+- `compare`: reports how many matched tasks were keyed by activity ID vs UID (or name) in text, HTML and JSON (`coverage`), and warns when tasks without an activity ID fell back to UID matching (e.g. a deleted alias). An empty activity ID now counts as missing.
+- Library: `risk::apply_uncertainty` returns `SidecarCoverage`; `RiskReport.uncertainty_coverage`; `compare::{MatchCoverage, FallbackTask}`, `Comparison.coverage`.
+
 ## v0.10.0 — EAC forms, TCPI, earned schedule, uncertainty sidecar, re-save-safe activity IDs
 - `variance`: adds EAC (atypical) = AC + (BAC − EV), EAC (CPI×SPI) = AC + (BAC − EV)/(CPI × SPI), TCPI, and earned schedule (ES, AT, SV(t), SPI(t), IEAC(t) with a forecast finish) on the project calendar. New JSON fields only. Existing fields are unchanged.
 - `risk --uncertainty sidecar.csv`: uncertainty class and/or optimistic/pessimistic days keyed by activity ID (or row, or name). It works on imported .mpp/.xer/XML, which carry no three-point data.
