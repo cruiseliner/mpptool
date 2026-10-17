@@ -105,7 +105,7 @@ enum Cmd {
         pess_factor: f64,
         #[arg(long)]
         json: bool,
-        /// RAID risk events CSV: id,name,probability,min_days,likely_days,max_days,tasks (tasks = row numbers, ;-separated)
+        /// RAID risk events CSV: id,name,probability,min_days,likely_days,max_days,tasks (tasks = activity IDs or row numbers, ;-separated); optional cost_min,cost_likely,cost_max
         #[arg(long)]
         risks: Option<PathBuf>,
         /// Uncertainty class factors (repeatable), e.g. vendor=0.95,2.2; built in: labor, equipment, design, vendor, permit, weather, fixed
@@ -307,7 +307,7 @@ impl CalArgs {
 /// Status-date update and leveling options shared by `from-csv`, `cpm` and `risk`.
 #[derive(clap::Args, Debug)]
 struct ProgressArgs {
-    /// Progress CSV: id (row number) or name, actual_start, actual_finish, remaining_days, percent_complete
+    /// Progress CSV: id (activity_id, else row number) or name, actual_start, actual_finish, remaining_days, percent_complete
     #[arg(long)]
     progress: Option<PathBuf>,
     /// Status (data) date for progress updates (YYYY-MM-DD); remaining work is scheduled after it

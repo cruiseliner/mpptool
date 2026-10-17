@@ -6,7 +6,9 @@
 - open **Primavera P6** `.xer` exports and P6 XML files, including files that hold several projects,
 - print summaries, tasks, resources, assignments and calendars as tables, JSON or CSV,
 - convert any of those formats to **Microsoft Project XML (MSPDI)**, which Microsoft Project opens directly (P6 → MS Project included),
-- build a new, scheduled project plan from a simple CSV, including the critical path.
+- build a new, scheduled project plan from a simple CSV, with stable activity IDs, holiday and shift calendars (10-hour days, Saturday overtime), total/free float and the critical path,
+- recompute CPM (`cpm`) and run a Monte Carlo schedule-risk analysis (`risk`: P50/P80/P90, criticality, sensitivity, risk events with optional cost) on any schedule it can read,
+- check a schedule (DCMA-style `check`), compare versions, report variance, resource loading and boards, all on the schedule's own calendar.
 
 It works on Windows, macOS and Linux, and it is designed so both people and AI agents can script it and improve it.
 
@@ -288,7 +290,8 @@ Go live,,0,3;4,2,,
 mpptool from-csv plan.csv plan.xml
 ```
 
-- **predecessors**: row numbers, starting at 1, separated by `;`. Each can have a link type (`FS` is the default, or `SS`, `FF`, `SF`) and a lag in working days, e.g. `2SS+1` or `4FF-1d`.
+- **activity_id** (or **id**, optional): a stable ID such as `A1010`. IDs must be unique and are written to the XML as Text1 ("Activity ID"). Use them instead of row numbers so inserting a row doesn't break links, progress updates or risk links.
+- **predecessors**: activity IDs (`A1010`, `A1010SS+2`) or row numbers starting at 1 (`#3` forces a row number when IDs are numeric), separated by `;`. Each can have a link type (`FS` is the default, or `SS`, `FF`, `SF`) and a lag in working days, e.g. `2SS+1` or `4FF-1d`.
 - **start** (`YYYY-MM-DD`, optional): saved as a *Start No Earlier Than* constraint. The earliest start becomes the project start. If no row has a start, the project starts today.
 - **outline_level**: a row followed by deeper rows becomes a summary task.
 - **duration_days**: `0` makes a milestone.
@@ -358,12 +361,14 @@ Add an `uncertainty` column to the CSV (or `optimistic`/`pessimistic` columns, w
 Tasks without a class use `--opt`/`--pess`. Discrete risks from the RAID log go in a CSV via `--risks risks.csv`:
 
 ```csv
-id,name,probability,min_days,likely_days,max_days,tasks
-R1,Switchgear ships late,30%,5,10,20,5
-R2,Inspector backlog (common cause),0.25,2,3,6,15;16
+id,name,probability,min_days,likely_days,max_days,tasks,cost_min,cost_likely,cost_max
+R1,Switchgear ships late,30%,5,10,20,A1050,0,5000,15000
+R2,Inspector backlog (common cause),0.25,2,3,6,15;16,,,
 ```
 
-In each run, an event fires with its probability. When it fires, one impact is sampled and added to **every** linked task (row numbers; a summary row means all of its tasks), so one cause hitting several tasks is modelled as one correlated hit. The report adds each task's **sensitivity** (Pearson correlation of its sampled duration with the finish, shown as a tornado list) and, for each event, its hit rate and mean finish impact (mean finish when it fires minus when it does not).
+The cost columns are optional. With them, `risk` reports each event's expected cost, the risk-event cost distribution (mean/P50/P80/P90) and the **joint P80**: the share of runs that make both the P80 date and the P80 cost. Only the event costs are counted. Duration-driven cost (overtime premiums, extended general conditions, productivity loss on long shifts) is **not** modelled, so add it yourself.
+
+In each run, an event fires with its probability. When it fires, one impact is sampled and added to **every** linked task (activity IDs or row numbers; a summary row means all of its tasks), so one cause hitting several tasks is modelled as one correlated hit. The report adds each task's **sensitivity** (Pearson correlation of its sampled duration with the finish, shown as a tornado list) and, for each event, its hit rate and mean finish impact (mean finish when it fires minus when it does not).
 
 ### Status updates (progress.csv)
 
@@ -380,11 +385,15 @@ id,actual_start,actual_finish,remaining_days,percent_complete
 7,2026-10-20,,4,
 ```
 
-`id` is the plan row number (or use a `name` column). Finished tasks keep their actual dates. In-progress tasks keep their actual start, and their remaining work (`remaining_days`, else duration × (1 − % complete)) is scheduled after the status date. Unstarted work never starts before the status date. The XML carries actual start/finish, % complete and the status date, so `check` tests 9/11/14 and `variance` work on the update. Imported schedules (.mpp/.xer/…) bring their own actuals and status date.
+`id` (or `activity_id`) is the task's activity ID when the plan has one, otherwise its row number (or use a `name` column). Finished tasks keep their actual dates. In-progress tasks keep their actual start, and their remaining work (`remaining_days`, else duration × (1 − % complete)) is scheduled after the status date. Unstarted work never starts before the status date. The XML carries actual start/finish, % complete and the status date, so `check` tests 9/11/14 and `variance` work on the update. Imported schedules (.mpp/.xer/…) bring their own actuals and status date.
 
 ### Resource leveling (within float)
 
-`from-csv --level` (and `cpm --level`) delays tasks whose named resources are double-booked, in early-start order, but only within their total float, so the project finish never moves. Each resource is one unit, busy with one task at a time. Leveled tasks get an SNET constraint at their new start and a `[leveled by mpptool]` note. Conflicts with no float left are listed, not resolved: add crew, resequence, or accept a later finish. This is a simple serial leveler, not Project's or P6's leveling engine (no partial units, splitting or priorities).
+`from-csv --level` (and `cpm --level`) delays tasks whose named resources are double-booked, in early-start order, but only within their total float, so the project finish never moves. Each resource is one unit, busy with one task at a time. Leveled tasks get an SNET constraint at their new start and a `[leveled by mpptool]` note. Conflicts with no float left are listed, not resolved: add crew, resequence, or accept a later finish. Because leveling adds SNET constraints, keep an unleveled copy of the plan for `cpm`/`risk` (constraints hide float), and say which file you hand over. This is a simple serial leveler, not Project's or P6's leveling engine (no partial units, splitting or priorities).
+
+### Calendars in reports
+
+`compare`, `variance`, `board`, `portfolio` and the CPLI in `check` count working days on the schedule's own project calendar (holidays, 6-day weeks), not plain Mon–Fri. `resources-load` measures each week's capacity from the calendar: a 5×10 h + Saturday 5 h calendar gives 55 h per resource, and holiday weeks have less.
 
 ### DCMA options
 

@@ -433,8 +433,9 @@ fn cpli(plan: &Plan, c: &Ctx, status: Option<NaiveDateTime>, has_float: bool, mi
     let Some(end) = finish_task(c) else { return skipped(13, name, &thr, "no incomplete activities") };
     let from = status.or(plan.start).or(c.acts.iter().filter_map(|t| t.start).min());
     let (Some(from), Some(fin)) = (from, end.finish) else { return skipped(13, name, &thr, "missing dates") };
-    // Remaining critical path length in working days, approximated as 5/7 of calendar days.
-    let cpl = (fin - from).num_minutes() as f64 / 1440.0 * 5.0 / 7.0;
+    // Remaining critical path length in working days on the plan's project calendar (holidays honoured).
+    let cal = crate::calendar::plan_calendar(plan);
+    let cpl = cal.minutes_between(from, fin) / 60.0 / c.hours_per_day;
     if cpl <= 0.0 {
         return skipped(13, name, &thr, "project finish is not after the status date");
     }

@@ -1,7 +1,7 @@
 //! Weekly resource loading (work hours per resource per week) with over-allocation flags.
 use crate::gantt::esc;
 use crate::model::Plan;
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use chrono::{Datelike, Duration, NaiveDate};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -17,6 +17,17 @@ pub struct ResourceLoad {
     pub over_allocated_weeks: usize,
     /// Hours per week, keyed by the week's Monday (only weeks with work).
     pub weeks: BTreeMap<NaiveDate, f64>,
+    /// Available hours in each report week (max units × that week's calendar hours, so holidays reduce it).
+    pub capacity_by_week: BTreeMap<NaiveDate, f64>,
+    #[serde(skip)]
+    units: f64,
+}
+
+impl ResourceLoad {
+    /// Capacity of the week starting `w` (falls back to the nominal weekly capacity).
+    pub fn capacity(&self, w: &NaiveDate) -> f64 {
+        self.capacity_by_week.get(w).copied().unwrap_or(self.capacity_hours_per_week)
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -30,14 +41,13 @@ fn monday(d: NaiveDate) -> NaiveDate {
     d - Duration::days(d.weekday().num_days_from_monday() as i64)
 }
 
-fn is_work(d: NaiveDate) -> bool {
-    !matches!(d.weekday(), Weekday::Sat | Weekday::Sun)
-}
-
-/// Spread each assignment's work evenly over its Mon–Fri working days and sum per resource and week.
+/// Spread each assignment's work over its working time on the plan's project calendar (in proportion to each day's
+/// working hours, so 10-hour days and Saturday overtime shifts carry more work) and sum per resource and week.
+/// Weekly capacity is max units × the calendar's working hours in that week (holidays reduce it).
 /// Material and cost resources are excluded.
 pub fn load(plan: &Plan) -> LoadReport {
-    let hpw = if plan.minutes_per_week > 0 { plan.minutes_per_week as f64 / 60.0 } else { 40.0 };
+    let cal = crate::calendar::plan_calendar(plan);
+    let week_hours = |m: NaiveDate| -> f64 { (0..7).map(|k| cal.minutes_on(m + Duration::days(k))).sum::<f64>() / 60.0 };
     let tasks: HashMap<i32, &crate::model::TaskRec> = plan.tasks.iter().map(|t| (t.uid, t)).collect();
     let mut per: BTreeMap<i32, BTreeMap<NaiveDate, f64>> = BTreeMap::new();
     for a in &plan.assignments {
@@ -47,12 +57,13 @@ pub fn load(plan: &Plan) -> LoadReport {
         let t = tasks.get(&a.task_uid);
         let (Some(s), Some(f)) = (a.start.or(t.and_then(|t| t.start)), a.finish.or(t.and_then(|t| t.finish))) else { continue };
         let (s, f) = (s.date(), f.date().max(s.date()));
-        let days: Vec<NaiveDate> = s.iter_days().take_while(|d| *d <= f).filter(|d| is_work(*d)).collect();
-        let days = if days.is_empty() { vec![s] } else { days };
-        let per_day = a.work_hours / days.len() as f64;
+        let days: Vec<(NaiveDate, f64)> =
+            s.iter_days().take_while(|d| *d <= f).map(|d| (d, cal.minutes_on(d))).filter(|x| x.1 > 0.0).collect();
+        let days = if days.is_empty() { vec![(s, 1.0)] } else { days };
+        let total: f64 = days.iter().map(|x| x.1).sum();
         let m = per.entry(a.resource_uid).or_default();
-        for d in days {
-            *m.entry(monday(d)).or_default() += per_day;
+        for (d, w) in days {
+            *m.entry(monday(d)).or_default() += a.work_hours * w / total;
         }
     }
     let mut all = BTreeSet::new();
@@ -63,16 +74,22 @@ pub fn load(plan: &Plan) -> LoadReport {
         }
         let weeks: BTreeMap<NaiveDate, f64> =
             per.remove(&r.uid).unwrap_or_default().into_iter().map(|(k, v)| (k, (v * 100.0).round() / 100.0)).collect();
-        let cap = r.max_units.unwrap_or(100.0) / 100.0 * hpw;
+        let units = r.max_units.unwrap_or(100.0) / 100.0;
+        // Nominal capacity: a full (holiday-free) week of the calendar; each week is checked against its own hours.
+        let nominal: f64 = cal.week.iter().map(|r| r.iter().map(|(a, b)| (b - a) as f64).sum::<f64>()).sum::<f64>() / 60.0;
+        let cap = units * nominal;
         all.extend(weeks.keys().copied());
+        let over = weeks.iter().filter(|(m, h)| **h > units * week_hours(**m) + 0.01).count();
         resources.push(ResourceLoad {
             uid: r.uid,
             name: r.name.clone(),
             capacity_hours_per_week: (cap * 100.0).round() / 100.0,
             total_hours: (weeks.values().sum::<f64>() * 100.0).round() / 100.0,
             peak_week_hours: weeks.values().copied().fold(0.0, f64::max),
-            over_allocated_weeks: weeks.values().filter(|h| **h > cap + 0.01).count(),
+            over_allocated_weeks: over,
             weeks,
+            capacity_by_week: BTreeMap::new(),
+            units,
         });
     }
     let weeks = match (all.first(), all.last()) {
@@ -87,6 +104,9 @@ pub fn load(plan: &Plan) -> LoadReport {
         }
         _ => vec![],
     };
+    for r in &mut resources {
+        r.capacity_by_week = weeks.iter().map(|w| (*w, (r.units * week_hours(*w) * 100.0).round() / 100.0)).collect();
+    }
     LoadReport { weeks, resources }
 }
 
@@ -102,8 +122,8 @@ pub fn to_csv(r: &LoadReport) -> Result<String, String> {
                 res.name.clone(),
                 wk.to_string(),
                 h.to_string(),
-                res.capacity_hours_per_week.to_string(),
-                (h > res.capacity_hours_per_week + 0.01).to_string(),
+                res.capacity(wk).to_string(),
+                (h > res.capacity(wk) + 0.01).to_string(),
             ])
             .map_err(|e| e.to_string())?;
         }
@@ -119,9 +139,9 @@ pub fn to_html(r: &LoadReport, title: &str) -> String {
     }
     let mut rows = String::new();
     for res in &r.resources {
-        let cap = res.capacity_hours_per_week;
         let mut cells = String::new();
         for w in &r.weeks {
+            let cap = res.capacity(w);
             let h = res.weeks.get(w).copied().unwrap_or(0.0);
             let (cls, alpha) = if h > cap + 0.01 { ("over", 1.0) } else { ("", if cap > 0.0 { (h / cap).min(1.0) } else { 0.0 }) };
             let style = if cls.is_empty() && h > 0.0 {
@@ -133,8 +153,9 @@ pub fn to_html(r: &LoadReport, title: &str) -> String {
             cells += &format!("<td class=\"{cls}\"{style} title=\"{} · week of {w}: {h:.1} h of {cap:.0} h\">{txt}</td>", esc(&res.name));
         }
         rows += &format!(
-            "<tr><th class=\"name\">{}</th><td class=\"num\">{cap:.0}</td><td class=\"num\">{:.0}</td><td class=\"num{}\">{}</td>{cells}</tr>\n",
+            "<tr><th class=\"name\">{}</th><td class=\"num\">{:.0}</td><td class=\"num\">{:.0}</td><td class=\"num{}\">{}</td>{cells}</tr>\n",
             esc(&res.name),
+            res.capacity_hours_per_week,
             res.total_hours,
             if res.over_allocated_weeks > 0 { " overtxt" } else { "" },
             res.over_allocated_weeks

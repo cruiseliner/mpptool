@@ -34,6 +34,8 @@ pub struct Row {
     pub pessimistic: Option<f64>,
     /// Uncertainty class for `risk` (CSV column `uncertainty`), e.g. `labor`, `vendor`, `fixed`.
     pub uncertainty: Option<String>,
+    /// Stable activity ID (CSV column `activity_id` or `id`); predecessors, progress and risk links may use it.
+    pub activity_id: Option<String>,
     /// Progress (from a progress CSV, see [`apply_progress`]).
     pub actual_start: Option<NaiveDate>,
     pub actual_finish: Option<NaiveDate>,
@@ -86,7 +88,7 @@ pub fn apply_progress(rows: &mut [Row], text: &str) -> Result<usize, String> {
     let mut rdr = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::All).comment(Some(b'#')).from_reader(text.as_bytes());
     let hdr: Vec<String> = rdr.headers().map_err(|e| format!("progress CSV header: {e}"))?.iter().map(|h| h.to_lowercase()).collect();
     let col = |n: &str| hdr.iter().position(|h| h == n);
-    let (ci, cn) = (col("id").or(col("row")), col("name"));
+    let (ci, cn) = (col("activity_id").or(col("id")).or(col("row")), col("name"));
     if ci.is_none() && cn.is_none() {
         return Err("progress CSV needs an 'id' (row number) or 'name' column".into());
     }
@@ -110,12 +112,7 @@ pub fn apply_progress(rows: &mut [Row], text: &str) -> Result<usize, String> {
                     _ => return Err(format!("progress line {line}: several tasks named '{nm}'; use the id column")),
                 }
             }
-            v => v
-                .parse::<usize>()
-                .ok()
-                .filter(|i| *i >= 1 && *i <= rows.len())
-                .map(|i| i - 1)
-                .ok_or(format!("progress line {line}: bad id '{v}'"))?,
+            v => resolve_ref(rows, v).map_err(|e| format!("progress line {line}: {e}"))?,
         };
         let date = |c: Option<usize>, what: &str| -> Result<Option<NaiveDate>, String> {
             match g(c).as_str() {
@@ -156,6 +153,43 @@ pub fn apply_progress(rows: &mut [Row], text: &str) -> Result<usize, String> {
     Ok(count)
 }
 
+/// Resolve a task reference (activity ID or 1-based row number; `#3` forces a row number) to a row index.
+pub fn resolve_ref(rows: &[Row], r: &str) -> Result<usize, String> {
+    let r = r.trim();
+    if let Some(n) = r.strip_prefix('#') {
+        return n.parse::<usize>().ok().filter(|i| *i >= 1 && *i <= rows.len()).map(|i| i - 1).ok_or(format!("bad row number '{r}'"));
+    }
+    if let Some(i) = rows.iter().position(|x| x.activity_id.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(r))) {
+        return Ok(i);
+    }
+    r.parse::<usize>()
+        .ok()
+        .filter(|i| *i >= 1 && *i <= rows.len())
+        .map(|i| i - 1)
+        .ok_or(format!("unknown task '{r}' (not an activity ID or row number 1..={})", rows.len()))
+}
+
+/// Parse a predecessor token that may start with an activity ID: the longest known ID that prefixes the token,
+/// followed by an optional type and lag (`A1010`, `A1010SS+2`, `A1010FF-1d`). `#3SS` forces row 3. Falls back to
+/// row numbers.
+fn parse_pred_ids(tok: &str, ids: &[(String, usize)]) -> Result<(usize, String, f64), String> {
+    let t = tok.trim();
+    if let Some(rest) = t.strip_prefix('#') {
+        return parse_pred(rest);
+    }
+    let up = t.to_uppercase();
+    let best = ids.iter().filter(|(id, _)| up.starts_with(id.as_str())).max_by_key(|(id, _)| id.len());
+    if let Some((id, row)) = best {
+        let rest = &up[id.len()..];
+        let rest_ok = rest.is_empty() || rest.starts_with(['F', 'S', '+', '-', ' ']);
+        if rest_ok {
+            let (_, ty, lag) = parse_pred(&format!("1{rest}")).map_err(|_| format!("bad predecessor '{t}'"))?;
+            return Ok((row + 1, ty, lag));
+        }
+    }
+    parse_pred(t)
+}
+
 /// Parse one predecessor token such as `3`, `3SS`, `4FF-1d`, `2FS+2days`.
 pub fn parse_pred(s: &str) -> Result<(usize, String, f64), String> {
     let s = s.trim().to_uppercase();
@@ -186,6 +220,8 @@ pub fn parse_rows(text: &str) -> Result<Vec<Row>, String> {
     let hdr: Vec<String> = rdr.headers().map_err(|e| format!("CSV header: {e}"))?.iter().map(|h| h.to_lowercase()).collect();
     let col = |n: &str| hdr.iter().position(|h| h == n);
     let ci = col("name").ok_or("CSV needs a 'name' column")?;
+    let caid = col("activity_id").or(col("id"));
+    let mut raw_preds: Vec<(usize, String)> = vec![];
     let (cs, cd, cp, cl, cr, cn) =
         (col("start"), col("duration_days").or(col("duration")), col("predecessors"), col("outline_level"), col("resources"), col("notes"));
     let cu = col("uncertainty").or(col("class"));
@@ -214,12 +250,8 @@ pub fn parse_rows(text: &str) -> Result<Vec<Row>, String> {
                 .filter(|v| *v >= 0.0)
                 .ok_or(format!("line {line}: bad duration '{s}'"))?,
         };
-        let preds = g(cp)
-            .split([';', ','])
-            .filter(|s| !s.trim().is_empty())
-            .map(parse_pred)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("line {line}: {e}"))?;
+        raw_preds.push((line, g(cp)));
+        let preds = vec![];
         let level = match g(cl).as_str() {
             "" => 1,
             s => s.parse().ok().filter(|v| *v >= 1).ok_or(format!("line {line}: bad outline_level '{s}'"))?,
@@ -240,10 +272,42 @@ pub fn parse_rows(text: &str) -> Result<Vec<Row>, String> {
         };
         let (optimistic, pessimistic) = (est(co, "optimistic")?, est(cpe, "pessimistic")?);
         let uncertainty = Some(g(cu).to_lowercase()).filter(|s| !s.is_empty());
-        rows.push(Row { name, start, dur, preds, level, res, notes, optimistic, pessimistic, uncertainty, ..Default::default() });
+        let activity_id = Some(g(caid)).filter(|s| !s.is_empty());
+        rows.push(Row {
+            name,
+            start,
+            dur,
+            preds,
+            level,
+            res,
+            notes,
+            optimistic,
+            pessimistic,
+            uncertainty,
+            activity_id,
+            ..Default::default()
+        });
     }
     if rows.is_empty() {
         return Err("CSV has no tasks".into());
+    }
+    let mut ids: Vec<(String, usize)> = vec![];
+    for (i, r) in rows.iter().enumerate() {
+        if let Some(a) = &r.activity_id {
+            let k = a.to_uppercase();
+            if ids.iter().any(|x| x.0 == k) {
+                return Err(format!("duplicate activity_id '{a}'"));
+            }
+            ids.push((k, i));
+        }
+    }
+    for (i, (line, p)) in raw_preds.iter().enumerate() {
+        rows[i].preds = p
+            .split([';', ','])
+            .filter(|s| !s.trim().is_empty())
+            .map(|t| parse_pred_ids(t, &ids))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("line {line}: {e}"))?;
     }
     Ok(rows)
 }
@@ -588,8 +652,9 @@ pub fn schedule_full(
     let (cal_name, minutes_per_week) = if cal.is_standard() {
         ("Standard".to_string(), 2400)
     } else {
-        let days = cal.week.iter().filter(|r| !r.is_empty()).count() as f64;
-        (cal.name.clone(), (cal.minutes_per_day() * days).round() as i32)
+        // Working minutes in a full calendar week (10-hour days and Saturday shifts included).
+        let week: u32 = cal.week.iter().flat_map(|r| r.iter().map(|(a, b)| b - a)).sum();
+        (cal.name.clone(), week as i32)
     };
     let mut plan = Plan {
         format: "CSV".into(),
@@ -611,6 +676,7 @@ pub fn schedule_full(
             uid: (i + 1) as i32,
             id: Some((i + 1) as i32),
             name: r.name.clone(),
+            activity_id: r.activity_id.clone(),
             outline_level: r.level,
             start: Some(start),
             finish: Some(finish),

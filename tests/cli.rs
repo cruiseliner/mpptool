@@ -350,3 +350,71 @@ fn from_csv_level_flag_reports() {
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("leveling:"));
 }
+
+#[test]
+fn compare_counts_slips_on_the_plan_calendar() {
+    let mk = |tag: &str, start: &str| {
+        let c = tmp(&format!("cal-cmp-{tag}.csv"));
+        std::fs::write(&c, format!("activity_id,name,start,duration_days,predecessors\nA10,Start,{start},1,\nA20,Work,,5,A10\n")).unwrap();
+        let x = tmp(&format!("cal-cmp-{tag}.xml"));
+        run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap(), "--holidays", "US"]);
+        x
+    };
+    let (a, b) = (mk("a", "2026-11-23"), mk("b", "2026-11-25"));
+    let out = run_ok(&["compare", a.to_str().unwrap(), b.to_str().unwrap()]);
+    // A20 start moves 11-24 -> 11-27 across Thanksgiving: 2 working days, not 3.
+    assert!(out.contains("start: 2026-11-24 08:00 → 2026-11-27 08:00  (+2 wd)"), "{out}");
+    assert!(out.contains("matched by activity_id"), "{out}");
+}
+
+#[test]
+fn resources_load_uses_ten_hour_days_and_saturday_overtime() {
+    let x = tmp("resload-10h.xml");
+    let fx = fixture("team.csv");
+    run_ok(&["from-csv", fx.to_str().unwrap(), x.to_str().unwrap(), "--hours", "06:00-11:00,11:30-16:30", "--day", "sat=07:00-12:00"]);
+    assert!(std::fs::read_to_string(&x).unwrap().contains("<MinutesPerWeek>3300</MinutesPerWeek>"));
+    let c = tmp("resload-10h.csv");
+    run_ok(&["resources-load", x.to_str().unwrap(), c.to_str().unwrap()]);
+    let t = std::fs::read_to_string(&c).unwrap();
+    assert!(t.contains("2,Bob,2026-05-04,54.4,55,false"), "Bob fits a 55 h week: {t}");
+    assert!(t.contains("1,Alice,2026-05-04,80,55,true"), "{t}");
+}
+
+#[test]
+fn activity_ids_drive_predecessors_progress_and_risks() {
+    let c = tmp("aid.csv");
+    std::fs::write(
+        &c,
+        "activity_id,name,start,duration_days,predecessors\nA10,Dig,2026-06-01,5,\nA20,Pour,,5,A10\nA30,Cure,,3,A20FS+1;#1\n",
+    )
+    .unwrap();
+    let x = tmp("aid.xml");
+    run_ok(&["from-csv", c.to_str().unwrap(), x.to_str().unwrap()]);
+    let tasks = run_ok(&["tasks", x.to_str().unwrap()]);
+    assert!(tasks.contains("2FS+1d;1"), "{tasks}");
+    assert!(std::fs::read_to_string(&x).unwrap().contains("<Value>A30</Value>"), "activity ID written to Text1");
+    let p = tmp("aid-progress.csv");
+    std::fs::write(&p, "id,actual_start,actual_finish,percent_complete\nA10,2026-06-01,2026-06-05,100\n2,2026-06-08,,50\n").unwrap();
+    let r = tmp("aid-risks.csv");
+    std::fs::write(
+        &r,
+        "id,probability,min_days,likely_days,max_days,tasks,cost_min,cost_likely,cost_max\nR1,50%,1,2,3,A20,1000,2000,5000\n",
+    )
+    .unwrap();
+    let out = run_ok(&[
+        "risk",
+        c.to_str().unwrap(),
+        "--progress",
+        p.to_str().unwrap(),
+        "--status-date",
+        "2026-06-10",
+        "--risks",
+        r.to_str().unwrap(),
+        "--runs",
+        "500",
+    ]);
+    assert!(out.contains("Risk-event cost"), "{out}");
+    let bad = tmp("aid-bad.csv");
+    std::fs::write(&bad, "activity_id,name,duration_days,predecessors\nA1,x,1,\nA1,y,1,\n").unwrap();
+    assert!(!bin().args(["from-csv", bad.to_str().unwrap(), tmp("aid-bad.xml").to_str().unwrap()]).output().unwrap().status.success());
+}
