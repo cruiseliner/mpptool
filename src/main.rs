@@ -84,6 +84,8 @@ enum Cmd {
         out: PathBuf,
         #[command(flatten)]
         cal: CalArgs,
+        #[command(flatten)]
+        prog: ProgressArgs,
     },
     /// Monte Carlo schedule risk for any schedule (.csv plan, .json task list, .mpp/.mpx/.xml/.xer/P6 XML):
     /// P10/P50/P80/P90 finish and criticality index (calendar-aware)
@@ -103,8 +105,16 @@ enum Cmd {
         pess_factor: f64,
         #[arg(long)]
         json: bool,
+        /// RAID risk events CSV: id,name,probability,min_days,likely_days,max_days,tasks (tasks = row numbers, ;-separated)
+        #[arg(long)]
+        risks: Option<PathBuf>,
+        /// Uncertainty class factors (repeatable), e.g. vendor=0.95,2.2; built in: labor, equipment, design, vendor, permit, weather, fixed
+        #[arg(long = "class", value_name = "NAME=O,P")]
+        classes: Vec<String>,
         #[command(flatten)]
         cal: CalArgs,
+        #[command(flatten)]
+        prog: ProgressArgs,
     },
     /// Critical path of any schedule (.csv, .json, .mpp/.mpx/.xml/.xer/P6 XML): forward/backward pass, total and free float
     Cpm {
@@ -113,6 +123,8 @@ enum Cmd {
         json: bool,
         #[command(flatten)]
         cal: CalArgs,
+        #[command(flatten)]
+        prog: ProgressArgs,
     },
     /// List public holidays of built-in countries (table, --csv or --json)
     Holidays {
@@ -159,6 +171,12 @@ enum Cmd {
         /// Exit with status 1 when any check fails
         #[arg(long)]
         fail_on_error: bool,
+        /// Check 1: don't count the project start milestone (no predecessors) and finish milestone (no successors)
+        #[arg(long)]
+        exclude_endpoints: bool,
+        /// Override thresholds, e.g. logic=10,lags=10,fs=85,hard=5,high_float=60,high_duration=30,missed=5,cpli=0.9,bei=0.9
+        #[arg(long)]
+        thresholds: Option<String>,
     },
     /// Compare two versions of a plan: tasks added/removed, changed dates, durations, links, % complete
     Compare {
@@ -286,14 +304,34 @@ impl CalArgs {
 }
 
 /// Rows + calendar for `risk`/`cpm`. Imported schedules use their own project calendar; `--holidays` adds to it.
+/// Status-date update and leveling options shared by `from-csv`, `cpm` and `risk`.
+#[derive(clap::Args, Debug)]
+struct ProgressArgs {
+    /// Progress CSV: id (row number) or name, actual_start, actual_finish, remaining_days, percent_complete
+    #[arg(long)]
+    progress: Option<PathBuf>,
+    /// Status (data) date for progress updates (YYYY-MM-DD); remaining work is scheduled after it
+    #[arg(long = "status-date", value_parser = parse_date)]
+    status: Option<chrono::NaiveDate>,
+    /// Level resources within total float (each named resource works one task at a time); ignored by `risk`
+    #[arg(long)]
+    level: bool,
+}
+
 fn load_input(
     input: &Path,
     cal: &CalArgs,
+    prog: &ProgressArgs,
     ropts: &ReadOptions,
     engine: Engine,
-) -> Result<(Vec<mpptool::from_csv::Row>, mpptool::calendar::CalendarSpec), String> {
+) -> Result<(Vec<mpptool::from_csv::Row>, mpptool::calendar::CalendarSpec, mpptool::from_csv::ScheduleOptions), String> {
     let csv_spec = cal.spec()?;
-    let (rows, mut spec) = mpptool::risk::load_any(input, &csv_spec, ropts, engine)?;
+    let (mut rows, mut spec, file_status) = mpptool::risk::load_any(input, &csv_spec, ropts, engine)?;
+    if let Some(f) = &prog.progress {
+        let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        from_csv::apply_progress(&mut rows, &text).map_err(|e| format!("{}: {e}", f.display()))?;
+    }
+    let sopts = mpptool::from_csv::ScheduleOptions { status_date: prog.status.or(file_status), level: prog.level };
     if !input.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")) {
         if !csv_spec.holidays.is_empty() {
             spec.holidays = csv_spec.holidays.clone();
@@ -301,7 +339,7 @@ fn load_input(
         }
         spec.custom.extend(csv_spec.custom.iter().cloned());
     }
-    Ok((rows, spec))
+    Ok((rows, spec, sopts))
 }
 
 fn parse_date(s: &str) -> Result<chrono::NaiveDate, String> {
@@ -457,9 +495,21 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
-        Cmd::FromCsv { input, out, cal } => {
+        Cmd::FromCsv { input, out, cal, prog } => {
             let spec = cal.spec()?;
-            let p = from_csv::build_with(&input, &spec)?;
+            let text = std::fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
+            let mut rows = from_csv::parse_rows(&text).map_err(|e| format!("{}: {e}", input.display()))?;
+            if let Some(f) = &prog.progress {
+                let t = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+                let k = from_csv::apply_progress(&mut rows, &t).map_err(|e| format!("{}: {e}", f.display()))?;
+                eprintln!("applied progress to {k} tasks");
+            }
+            let name = input.file_stem().map(|s| s.to_string_lossy().to_string());
+            let sopts = from_csv::ScheduleOptions { status_date: prog.status, level: prog.level };
+            let (p, info) = from_csv::schedule_full(&rows, name, chrono::Local::now().date_naive(), &spec, &sopts)?;
+            if prog.level {
+                eprintln!("leveling: delayed rows {:?} within float; still over-allocated (no float): {:?}", info.leveled, info.unresolved);
+            }
             write_file(&out, &mspdi_writer::write(&p, &WriteOptions::default()))?;
             eprintln!(
                 "wrote {} ({} tasks, finish {}, {} critical)",
@@ -470,9 +520,18 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
-        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, cal } => {
-            let (rows, spec) = load_input(&input, &cal, &opts, engine)?;
-            let opts = mpptool::risk::RiskOptions { runs, seed, opt_factor, pess_factor };
+        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, risks, classes, cal, prog } => {
+            let (rows, spec, sopts) = load_input(&input, &cal, &prog, &opts, engine)?;
+            let mut opts =
+                mpptool::risk::RiskOptions { runs, seed, opt_factor, pess_factor, status_date: sopts.status_date, ..Default::default() };
+            for c in &classes {
+                let (k, v) = mpptool::risk::parse_class(c)?;
+                opts.classes.insert(k, v);
+            }
+            if let Some(f) = &risks {
+                let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+                opts.events = mpptool::risk::parse_events(&text).map_err(|e| format!("{}: {e}", f.display()))?;
+            }
             let r = mpptool::risk::simulate(&rows, chrono::Local::now().date_naive(), &spec, &opts)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?);
@@ -481,9 +540,9 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Cpm { input, json, cal } => {
-            let (rows, spec) = load_input(&input, &cal, &opts, engine)?;
-            let v = mpptool::risk::cpm(&rows, chrono::Local::now().date_naive(), &spec)?;
+        Cmd::Cpm { input, json, cal, prog } => {
+            let (rows, spec, sopts) = load_input(&input, &cal, &prog, &opts, engine)?;
+            let v = mpptool::risk::cpm(&rows, chrono::Local::now().date_naive(), &spec, &sopts)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
             } else {
@@ -547,9 +606,17 @@ fn run(cli: Cli) -> Result<(), String> {
             eprintln!("wrote {} ({} tasks)", out.display(), p.tasks.len());
             Ok(())
         }
-        Cmd::Check { file, json: j, status_date, fail_on_error } => {
+        Cmd::Check { file, json: j, status_date, fail_on_error, exclude_endpoints, thresholds } => {
             let p = read(&file)?;
-            let o = mpptool::check::CheckOptions { status_date: status_date.and_then(|d| d.and_hms_opt(17, 0, 0)) };
+            let mut th = mpptool::check::Thresholds::default();
+            if let Some(t) = &thresholds {
+                th.apply(t).map_err(|e| format!("--thresholds: {e}"))?;
+            }
+            let o = mpptool::check::CheckOptions {
+                status_date: status_date.and_then(|d| d.and_hms_opt(17, 0, 0)),
+                exclude_endpoints,
+                thresholds: th,
+            };
             let a = mpptool::check::assess(&p, &o);
             if j {
                 json(&a)?;

@@ -46,6 +46,72 @@ pub struct Assessment {
 pub struct CheckOptions {
     /// Overrides the plan's status date.
     pub status_date: Option<NaiveDateTime>,
+    /// Check 1: do not count the project start milestone (no predecessors) and finish milestone (no successors).
+    pub exclude_endpoints: bool,
+    /// Pass/fail thresholds (defaults are the DCMA values).
+    pub thresholds: Thresholds,
+}
+
+/// Configurable DCMA thresholds. Percentages are 0–100; day limits are working days.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Thresholds {
+    pub logic_pct: f64,
+    pub lags_pct: f64,
+    pub fs_pct: f64,
+    pub hard_constraints_pct: f64,
+    pub high_float_days: f64,
+    pub high_float_pct: f64,
+    pub high_duration_days: f64,
+    pub high_duration_pct: f64,
+    pub missed_pct: f64,
+    pub cpli: f64,
+    pub bei: f64,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Thresholds {
+            logic_pct: 5.0,
+            lags_pct: 5.0,
+            fs_pct: 90.0,
+            hard_constraints_pct: 5.0,
+            high_float_days: 44.0,
+            high_float_pct: 5.0,
+            high_duration_days: 44.0,
+            high_duration_pct: 5.0,
+            missed_pct: 5.0,
+            cpli: 0.95,
+            bei: 0.95,
+        }
+    }
+}
+
+impl Thresholds {
+    /// Apply `key=value[,key=value]` overrides, e.g. `logic=10,high_float=60,cpli=0.9`.
+    /// Keys: logic, lags, fs, hard, high_float, high_float_pct, high_duration, high_duration_pct, missed, cpli, bei.
+    pub fn apply(&mut self, spec: &str) -> Result<(), String> {
+        for kv in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').ok_or(format!("bad threshold '{kv}' (want key=value)"))?;
+            let v: f64 =
+                v.trim().parse().ok().filter(|v: &f64| v.is_finite() && *v >= 0.0).ok_or(format!("bad threshold value in '{kv}'"))?;
+            let slot = match k.trim().to_lowercase().replace('-', "_").as_str() {
+                "logic" => &mut self.logic_pct,
+                "lags" => &mut self.lags_pct,
+                "fs" => &mut self.fs_pct,
+                "hard" | "hard_constraints" => &mut self.hard_constraints_pct,
+                "high_float" | "high_float_days" => &mut self.high_float_days,
+                "high_float_pct" => &mut self.high_float_pct,
+                "high_duration" | "high_duration_days" => &mut self.high_duration_days,
+                "high_duration_pct" => &mut self.high_duration_pct,
+                "missed" => &mut self.missed_pct,
+                "cpli" => &mut self.cpli,
+                "bei" => &mut self.bei,
+                other => return Err(format!("unknown threshold '{other}'")),
+            };
+            *slot = v;
+        }
+        Ok(())
+    }
 }
 
 fn tid(t: &TaskRec) -> String {
@@ -125,9 +191,29 @@ pub fn assess(plan: &Plan, o: &CheckOptions) -> Assessment {
         c.incomplete.iter().flat_map(|t| t.predecessors.iter().map(move |p| (*t, p))).collect();
 
     // 1 Logic
-    let no_logic: Vec<&TaskRec> =
-        c.incomplete.iter().copied().filter(|t| t.predecessors.is_empty() || !c.succ.contains_key(&t.uid)).collect();
-    checks.push(ratio_check(1, "Logic (missing predecessors or successors)", 5.0, no_logic, c.incomplete.len(), "<= 5%"));
+    let th = &o.thresholds;
+    let no_logic: Vec<&TaskRec> = c
+        .incomplete
+        .iter()
+        .copied()
+        .filter(|t| {
+            let (np, ns) = (t.predecessors.is_empty(), !c.succ.contains_key(&t.uid));
+            // Optionally accept the start milestone (no predecessors) and finish milestone (no successors).
+            (np || ns) && !(o.exclude_endpoints && t.milestone && np != ns)
+        })
+        .collect();
+    let mut r = ratio_check(
+        1,
+        "Logic (missing predecessors or successors)",
+        th.logic_pct,
+        no_logic,
+        c.incomplete.len(),
+        &format!("<= {}%", th.logic_pct),
+    );
+    if o.exclude_endpoints {
+        r.note = Some("start and finish milestones excluded".into());
+    }
+    checks.push(r);
     // 2 Leads
     let leads: Vec<&TaskRec> = rels.iter().filter(|(_, p)| p.lag_hours < 0.0).map(|(t, _)| *t).collect();
     let mut r = ratio_check(2, "Leads (negative lag)", 0.0, dedup(leads.clone()), rels.len(), "0");
@@ -136,34 +222,58 @@ pub fn assess(plan: &Plan, o: &CheckOptions) -> Assessment {
     checks.push(r);
     // 3 Lags
     let lags: Vec<&TaskRec> = rels.iter().filter(|(_, p)| p.lag_hours > 0.0).map(|(t, _)| *t).collect();
-    let mut r = ratio_check(3, "Lags (positive lag)", 5.0, dedup(lags.clone()), rels.len(), "<= 5%");
+    let mut r = ratio_check(3, "Lags (positive lag)", th.lags_pct, dedup(lags.clone()), rels.len(), &format!("<= {}%", th.lags_pct));
     r.count = lags.len();
     r.percent = pct(lags.len(), rels.len());
     checks.push(r);
     // 4 Relationship types
     let non_fs: Vec<&TaskRec> = rels.iter().filter(|(_, p)| p.link_type != "FS").map(|(t, _)| *t).collect();
-    let mut r = ratio_check(4, "Relationship types (FS >= 90%)", 10.0, dedup(non_fs.clone()), rels.len(), ">= 90% FS");
+    let mut r = ratio_check(
+        4,
+        &format!("Relationship types (FS >= {}%)", th.fs_pct),
+        100.0 - th.fs_pct,
+        dedup(non_fs.clone()),
+        rels.len(),
+        &format!(">= {}% FS", th.fs_pct),
+    );
     r.count = non_fs.len();
     r.percent = pct(non_fs.len(), rels.len());
     r.note = Some(format!("{} of {} relationships are not finish-to-start", non_fs.len(), rels.len()));
     checks.push(r);
     // 5 Hard constraints (MSO, MFO, SNLT, FNLT)
     let hard: Vec<&TaskRec> = c.incomplete.iter().copied().filter(|t| matches!(t.constraint_type, Some(2 | 3 | 5 | 7))).collect();
-    checks.push(ratio_check(5, "Hard constraints (MSO/MFO/SNLT/FNLT)", 5.0, hard, c.incomplete.len(), "<= 5%"));
+    checks.push(ratio_check(
+        5,
+        "Hard constraints (MSO/MFO/SNLT/FNLT)",
+        th.hard_constraints_pct,
+        hard,
+        c.incomplete.len(),
+        &format!("<= {}%", th.hard_constraints_pct),
+    ));
     // 6 High float, 7 negative float
-    let limit = 44.0 * c.hours_per_day;
+    let limit = th.high_float_days * c.hours_per_day;
+    let hf_name = format!("High float (> {} working days)", th.high_float_days);
+    let hf_th = format!("<= {}%", th.high_float_pct);
     if has_float {
         let hi: Vec<&TaskRec> = c.incomplete.iter().copied().filter(|t| t.total_slack_hours.is_some_and(|f| f > limit)).collect();
-        checks.push(ratio_check(6, "High float (> 44 working days)", 5.0, hi, c.incomplete.len(), "<= 5%"));
+        checks.push(ratio_check(6, &hf_name, th.high_float_pct, hi, c.incomplete.len(), &hf_th));
         let neg: Vec<&TaskRec> = c.incomplete.iter().copied().filter(|t| t.total_slack_hours.is_some_and(|f| f < -0.01)).collect();
         checks.push(ratio_check(7, "Negative float", 0.0, neg, c.incomplete.len(), "0"));
     } else {
-        checks.push(skipped(6, "High float (> 44 working days)", "<= 5%", "no total float in the file"));
+        checks.push(skipped(6, &hf_name, &hf_th, "no total float in the file"));
         checks.push(skipped(7, "Negative float", "0", "no total float in the file"));
     }
     // 8 High duration
-    let long: Vec<&TaskRec> = c.incomplete.iter().copied().filter(|t| !t.milestone && t.duration_hours > limit).collect();
-    checks.push(ratio_check(8, "High duration (> 44 working days)", 5.0, long, c.incomplete.len(), "<= 5%"));
+    let dlimit = th.high_duration_days * c.hours_per_day;
+    let long: Vec<&TaskRec> = c.incomplete.iter().copied().filter(|t| !t.milestone && t.duration_hours > dlimit).collect();
+    checks.push(ratio_check(
+        8,
+        &format!("High duration (> {} working days)", th.high_duration_days),
+        th.high_duration_pct,
+        long,
+        c.incomplete.len(),
+        &format!("<= {}%", th.high_duration_pct),
+    ));
     // 9 Invalid dates
     match status {
         Some(sd) => {
@@ -198,14 +308,21 @@ pub fn assess(plan: &Plan, o: &CheckOptions) -> Assessment {
             let due: Vec<&TaskRec> = c.acts.iter().copied().filter(|t| t.baseline_finish.is_some_and(|b| b <= sd)).collect();
             let missed: Vec<&TaskRec> =
                 due.iter().copied().filter(|t| t.actual_finish.or(t.finish).is_some_and(|f| Some(f) > t.baseline_finish)).collect();
-            checks.push(ratio_check(11, "Missed tasks (finished late vs baseline)", 5.0, missed, due.len(), "<= 5%"));
+            checks.push(ratio_check(
+                11,
+                "Missed tasks (finished late vs baseline)",
+                th.missed_pct,
+                missed,
+                due.len(),
+                &format!("<= {}%", th.missed_pct),
+            ));
         }
         _ => checks.push(skipped(11, "Missed tasks (finished late vs baseline)", "<= 5%", need(status.is_some(), has_baseline))),
     }
     // 12 Critical path test (static approximation)
     checks.push(critical_path_test(&c));
     // 13 CPLI
-    checks.push(cpli(plan, &c, status, has_float));
+    checks.push(cpli(plan, &c, status, has_float, th.cpli));
     // 14 BEI
     match (status, has_baseline) {
         (Some(sd), true) => {
@@ -217,8 +334,8 @@ pub fn assess(plan: &Plan, o: &CheckOptions) -> Assessment {
             checks.push(CheckResult {
                 number: 14,
                 name: "Baseline Execution Index (BEI)".into(),
-                status: if bei.is_none_or(|b| b >= 0.95) { "pass" } else { "fail" }.into(),
-                threshold: ">= 0.95".into(),
+                status: if bei.is_none_or(|b| b >= th.bei) { "pass" } else { "fail" }.into(),
+                threshold: format!(">= {}", th.bei),
                 count: bad.len(),
                 total: due,
                 percent: pct(bad.len(), due),
@@ -307,31 +424,32 @@ fn critical_path_test(c: &Ctx) -> CheckResult {
     }
 }
 
-fn cpli(plan: &Plan, c: &Ctx, status: Option<NaiveDateTime>, has_float: bool) -> CheckResult {
+fn cpli(plan: &Plan, c: &Ctx, status: Option<NaiveDateTime>, has_float: bool, min: f64) -> CheckResult {
     let name = "Critical Path Length Index (CPLI)";
+    let thr = format!(">= {min}");
     if !has_float {
-        return skipped(13, name, ">= 0.95", "no total float in the file");
+        return skipped(13, name, &thr, "no total float in the file");
     }
-    let Some(end) = finish_task(c) else { return skipped(13, name, ">= 0.95", "no incomplete activities") };
+    let Some(end) = finish_task(c) else { return skipped(13, name, &thr, "no incomplete activities") };
     let from = status.or(plan.start).or(c.acts.iter().filter_map(|t| t.start).min());
-    let (Some(from), Some(fin)) = (from, end.finish) else { return skipped(13, name, ">= 0.95", "missing dates") };
+    let (Some(from), Some(fin)) = (from, end.finish) else { return skipped(13, name, &thr, "missing dates") };
     // Remaining critical path length in working days, approximated as 5/7 of calendar days.
     let cpl = (fin - from).num_minutes() as f64 / 1440.0 * 5.0 / 7.0;
     if cpl <= 0.0 {
-        return skipped(13, name, ">= 0.95", "project finish is not after the status date");
+        return skipped(13, name, &thr, "project finish is not after the status date");
     }
     let tf = end.total_slack_hours.unwrap_or(0.0) / c.hours_per_day;
     let v = (cpl + tf) / cpl;
     CheckResult {
         number: 13,
         name: name.into(),
-        status: if v >= 0.95 { "pass" } else { "fail" }.into(),
-        threshold: ">= 0.95".into(),
+        status: if v >= min { "pass" } else { "fail" }.into(),
+        threshold: thr.clone(),
         count: 0,
         total: 0,
         percent: None,
         value: Some(v),
-        task_ids: if v >= 0.95 { vec![] } else { vec![tid(end)] },
+        task_ids: if v >= min { vec![] } else { vec![tid(end)] },
         note: Some(format!("remaining length ≈ {cpl:.1} working days, finish float {tf:.1} days")),
     }
 }
@@ -379,5 +497,27 @@ mod tests {
         assert_eq!(get(9).status, "skipped");
         assert_eq!(get(14).status, "skipped");
         assert_eq!(a.checks.len(), 14);
+    }
+
+    #[test]
+    fn thresholds_and_endpoint_exclusion() {
+        let mut th = Thresholds::default();
+        th.apply("logic=10, high_float=60,cpli=0.9").unwrap();
+        assert_eq!((th.logic_pct, th.high_float_days, th.cpli), (10.0, 60.0, 0.9));
+        assert!(th.apply("nope=1").is_err());
+        assert!(th.apply("logic=abc").is_err());
+        let rows = crate::from_csv::parse_rows("name,start,duration_days,predecessors\nStart,2026-11-02,0,\nA,,5,1\nB,,5,2\nFinish,,0,3\n")
+            .unwrap();
+        let p = crate::from_csv::schedule(&rows, None, chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()).unwrap();
+        let a = assess(&p, &CheckOptions::default());
+        assert_eq!(a.checks[0].count, 2);
+        let a = assess(&p, &CheckOptions { exclude_endpoints: true, ..Default::default() });
+        assert_eq!(a.checks[0].count, 0);
+        assert_eq!(a.checks[0].status, "pass");
+        let mut th = Thresholds::default();
+        th.apply("logic=60").unwrap();
+        let a = assess(&p, &CheckOptions { thresholds: th, ..Default::default() });
+        assert_eq!(a.checks[0].status, "pass");
+        assert_eq!(a.checks[0].threshold, "<= 60%");
     }
 }

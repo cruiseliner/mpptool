@@ -279,3 +279,74 @@ fn risk_and_cpm_run_on_imported_schedules() {
     let b: serde_json::Value = serde_json::from_str(&run_ok(&["cpm", fixture("status.xml").to_str().unwrap(), "--json"])).unwrap();
     assert_eq!(a.as_array().unwrap().len(), b.as_array().unwrap().len());
 }
+
+#[test]
+fn progress_update_and_status_date() {
+    let out = tmp("plan-progress.xml");
+    let o = out.to_str().unwrap();
+    let csv = fixture("plan.csv");
+    let prog = fixture("progress.csv");
+    run_ok(&["from-csv", csv.to_str().unwrap(), o, "--progress", prog.to_str().unwrap(), "--status-date", "2026-10-23"]);
+    let tasks: serde_json::Value = serde_json::from_str(&run_ok(&["tasks", "--json", o])).unwrap();
+    let t = |n: &str| tasks.as_array().unwrap().iter().find(|t| t["name"] == n).unwrap().clone();
+    assert_eq!(t("Wireframes")["percent_complete"], 100.0);
+    assert_eq!(t("Wireframes")["actual_finish"], "2026-10-21T17:00:00");
+    assert_eq!(t("Visual design")["finish"], "2026-10-27T17:00:00");
+    assert_eq!(t("Backend")["finish"], "2026-10-29T17:00:00");
+    let chk: serde_json::Value = serde_json::from_str(&run_ok(&["check", "--json", o])).unwrap();
+    let c9 = chk["checks"].as_array().unwrap().iter().find(|c| c["number"] == 9).unwrap().clone();
+    assert_eq!(c9["status"], "pass", "no invalid dates after a status update: {c9}");
+    // Progress without a status date is rejected.
+    let bad = bin().args(["from-csv", csv.to_str().unwrap(), o, "--progress", prog.to_str().unwrap()]).output().unwrap();
+    assert!(!bad.status.success());
+}
+
+#[test]
+fn risk_events_and_sensitivity_in_output() {
+    let csv = fixture("plan.csv");
+    let risks = fixture("risks.csv");
+    let j: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "risk",
+        csv.to_str().unwrap(),
+        "--runs",
+        "1000",
+        "--json",
+        "--risks",
+        risks.to_str().unwrap(),
+        "--class",
+        "labor=0.9,1.3",
+    ]))
+    .unwrap();
+    let ev = j["events"].as_array().unwrap();
+    assert_eq!(ev.len(), 2);
+    assert!(ev.iter().all(|e| e["mean_finish_impact_days"].as_f64().unwrap() > 0.0));
+    assert!(j["tasks"].as_array().unwrap().iter().any(|t| t["sensitivity"].as_f64().unwrap() > 0.3));
+    let text = run_ok(&["risk", csv.to_str().unwrap(), "--runs", "300", "--risks", risks.to_str().unwrap()]);
+    assert!(text.contains("Top drivers by sensitivity") && text.contains("Risk events"));
+}
+
+#[test]
+fn check_thresholds_and_endpoint_exclusion() {
+    let xml = plan_xml("thresholds");
+    let x = xml.to_str().unwrap();
+    let get = |args: &[&str]| -> serde_json::Value {
+        let mut a = vec!["check", "--json", x];
+        a.extend_from_slice(args);
+        let v: serde_json::Value = serde_json::from_str(&run_ok(&a)).unwrap();
+        v["checks"][0].clone()
+    };
+    let base = get(&[]);
+    let ex = get(&["--exclude-endpoints"]);
+    assert!(ex["count"].as_u64().unwrap() < base["count"].as_u64().unwrap());
+    let th = get(&["--thresholds", "logic=50"]);
+    assert_eq!(th["threshold"], "<= 50%");
+    assert!(bin().args(["check", x, "--thresholds", "bogus=1"]).output().unwrap().status.code() != Some(0));
+}
+
+#[test]
+fn from_csv_level_flag_reports() {
+    let out = tmp("team-level.xml");
+    let o = bin().args(["from-csv", fixture("team.csv").to_str().unwrap(), out.to_str().unwrap(), "--level"]).output().unwrap();
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("leveling:"));
+}
