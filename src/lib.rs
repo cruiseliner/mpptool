@@ -7,16 +7,19 @@
 //! # Ok::<(), String>(())
 //! ```
 pub mod board;
+pub mod calendar;
 pub mod check;
 pub mod compare;
 pub mod from_csv;
 pub mod gantt;
+pub mod holidays;
 pub mod model;
 pub mod mspdi_writer;
 pub mod portfolio;
 pub mod read_mpxj;
 pub mod read_p6;
 pub mod resload;
+pub mod risk;
 pub mod variance;
 pub mod workdays;
 pub mod xlsx;

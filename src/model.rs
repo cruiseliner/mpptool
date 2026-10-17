@@ -60,6 +60,9 @@ pub struct TaskRec {
     /// Baseline cost (BAC) (not part of the `tasks` JSON output).
     #[serde(skip)]
     pub baseline_cost: Option<f64>,
+    /// Free slack in working hours, when computed (not part of the `tasks` JSON output).
+    #[serde(skip)]
+    pub free_slack_hours: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]

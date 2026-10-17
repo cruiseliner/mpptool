@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.0 — calendars, holidays, float and schedule risk
+- `from-csv` calendar options: `--holidays` with built-in tables for US federal holidays (observed Sat→Fri, Sun→Mon), CA, GB, AU, DE, FR, IN and MX; `--years`; `--holiday-file` for custom non-working or working days (shutdowns, overtime Saturdays, make-up days); `--work-days` (6- and 7-day weeks); `--hours` (shift hours, e.g. 10-hour days); repeatable `--day` overrides (e.g. `sat=07:00-12:00`); `--hours-per-day`; `--calendar-name`. Dates are rescheduled around non-working time and the calendar with its exceptions is written to the MSPDI XML. Without these options the output is unchanged.
+- `from-csv` now computes free slack, and MSPDI output writes `TotalSlack` and `FreeSlack` (also in `to-xml` when the source has total slack), so `check` no longer skips the float tests for CSV plans.
+- New `risk <plan.csv>`: calendar-aware Monte Carlo (PERT-beta, `--runs`, `--seed`, `--opt`, `--pess`, optional `optimistic`/`pessimistic` CSV columns) with P10/P50/P80/P90 finish dates, probability of meeting the deterministic finish and a per-task criticality index. Text or `--json`.
+- `risk` and new `cpm` (forward/backward pass, early dates, total and free float) run on any schedule mpptool reads (.mpp, .mpx, MSPDI, XER, P6 XML), on CSV plans, and on a JSON task list such as `tasks --json` output, using the file's project calendar.
+- README: states plainly that XML output is not yet verified in real Microsoft Project, recommends reading it back with `tasks`, and notes there is no XER writer (import MSP XML into P6 and verify).
+- New `holidays --country US --years 2026-2028` lists holidays (`--csv`, `--json`, `--country list`).
+- Library: new `calendar`, `holidays` and `risk` modules; `from_csv::build_with`/`schedule_with` take a `CalendarSpec`; `from_csv::Row` has new `optimistic`/`pessimistic` fields.
+
 ## v0.6.1 — remove the mpxrust reader
 - Removed the optional `mpxrust` reader, the `mpxrust` cargo feature and the `mpxrust` dependency. mpxj-rs is now the only Microsoft Project reader, so there is no alternative engine to choose. `--engine mpxj` is still accepted and does nothing; `--engine mpxrust` fails with an error pointing at the default reader. The CI job that built without the optional reader is gone.
 

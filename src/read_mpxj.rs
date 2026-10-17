@@ -284,6 +284,7 @@ pub fn read(path: &Path, opts: &ReadOptions) -> Result<Plan, String> {
             calendar_uid: t.get_calendar_unique_id(),
             baseline_duration_hours: t.get_baseline_duration().map(|d| dur_hours(&Some(d), mpdf, mpwf)),
             baseline_cost: t.get_baseline_cost(),
+            free_slack_hours: None,
         });
     }
     for r in pf.get_resources().iter() {

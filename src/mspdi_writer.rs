@@ -241,6 +241,13 @@ pub fn write(p: &Plan, opts: &WriteOptions) -> String {
         w.tag(3, "Milestone", t.milestone as i32);
         w.tag(3, "Summary", t.summary as i32);
         w.tag(3, "Critical", t.critical as i32);
+        // Slack is in tenths of a minute, like LinkLag.
+        if let Some(h) = t.free_slack_hours {
+            w.tag(3, "FreeSlack", (h * 600.0).round() as i64);
+        }
+        if let Some(h) = t.total_slack_hours {
+            w.tag(3, "TotalSlack", (h * 600.0).round() as i64);
+        }
         if let Some(c) = t.fixed_cost.filter(|c| *c != 0.0) {
             w.tag(3, "FixedCost", money(c));
         }
