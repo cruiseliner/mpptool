@@ -65,8 +65,11 @@ pub struct RiskEvent {
     pub min_days: f64,
     pub likely_days: f64,
     pub max_days: f64,
-    /// Linked row numbers (1-based). A summary row applies to all its leaf tasks.
-    pub tasks: Vec<usize>,
+    /// Linked tasks: activity IDs or 1-based row numbers (`#3` forces a row number). A summary row applies to all
+    /// its leaf tasks.
+    pub tasks: Vec<String>,
+    /// Optional cost impact (min, most likely, max) in currency units, sampled when the event fires.
+    pub cost: Option<(f64, f64, f64)>,
 }
 
 /// Parse a RAID risk CSV: `id, name, probability, min_days, likely_days, max_days, tasks` (header required,
@@ -82,6 +85,7 @@ pub fn parse_events(text: &str) -> Result<Vec<RiskEvent>, String> {
     let (cmin, cml, cmax) = (col(&["min_days", "min"]), col(&["likely_days", "likely", "ml", "most_likely"]), col(&["max_days", "max"]));
     let cmax = cmax.ok_or("risk CSV needs a 'max_days' column")?;
     let ct = col(&["tasks", "task_ids", "linked_tasks"]).ok_or("risk CSV needs a 'tasks' column")?;
+    let (ccmin, ccml, ccmax) = (col(&["cost_min"]), col(&["cost_likely", "cost_ml"]), col(&["cost_max"]));
     let mut out = vec![];
     for (k, rec) in rdr.records().enumerate() {
         let line = k + 2;
@@ -116,14 +120,23 @@ pub fn parse_events(text: &str) -> Result<Vec<RiskEvent>, String> {
         if !(min_days <= likely_days && likely_days <= max_days) {
             return Err(format!("risk line {line}: need min <= likely <= max"));
         }
-        let tasks = g(Some(ct))
-            .split([';', ',', ' '])
-            .filter(|t| !t.is_empty())
-            .map(|t| t.trim().parse::<usize>().ok().filter(|v| *v >= 1).ok_or(format!("risk line {line}: bad task id '{t}'")))
-            .collect::<Result<Vec<_>, _>>()?;
+        let tasks = g(Some(ct)).split([';', ',', ' ']).filter(|t| !t.is_empty()).map(|t| t.trim().to_string()).collect::<Vec<_>>();
         if tasks.is_empty() {
             return Err(format!("risk line {line}: no linked tasks"));
         }
+        let cmx = num(ccmax, "cost_max")?;
+        let cost = match cmx {
+            None if g(ccmin).is_empty() && g(ccml).is_empty() => None,
+            None => return Err(format!("risk line {line}: cost_min/cost_likely need cost_max")),
+            Some(mx) => {
+                let ml = num(ccml, "cost_likely")?.unwrap_or(mx);
+                let mn = num(ccmin, "cost_min")?.unwrap_or(ml.min(mx));
+                if !(mn <= ml && ml <= mx) {
+                    return Err(format!("risk line {line}: need cost_min <= cost_likely <= cost_max"));
+                }
+                Some((mn, ml, mx))
+            }
+        };
         let id = Some(g(ci)).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("R{}", k + 1));
         out.push(RiskEvent {
             name: Some(g(cn)).filter(|s| !s.is_empty()).unwrap_or_else(|| id.clone()),
@@ -133,6 +146,7 @@ pub fn parse_events(text: &str) -> Result<Vec<RiskEvent>, String> {
             likely_days,
             max_days,
             tasks,
+            cost,
         });
     }
     Ok(out)
@@ -186,6 +200,21 @@ pub struct EventRisk {
     pub hit_rate: f64,
     /// Mean project finish (working days) when the event fired minus when it did not.
     pub mean_finish_impact_days: Option<f64>,
+    /// Expected cost over all runs (probability x mean sampled cost); only with cost columns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_cost: Option<f64>,
+}
+
+/// Risk-cost distribution (sum of fired event costs per run). Duration-driven cost (overtime, extended general
+/// conditions) is not modelled.
+#[derive(Debug, Serialize)]
+pub struct CostRisk {
+    pub mean: f64,
+    pub p50: f64,
+    pub p80: f64,
+    pub p90: f64,
+    /// Share of runs finishing by the P80 date AND within the P80 risk cost (joint confidence; at most 80%).
+    pub joint_p80: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,6 +233,9 @@ pub struct RiskReport {
     pub tasks: Vec<TaskRisk>,
     /// Risk events, largest finish impact first (empty without a risk CSV).
     pub events: Vec<EventRisk>,
+    /// Risk-event cost summary (only when at least one event has cost columns).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_cost: Option<CostRisk>,
 }
 
 /// xoshiro256** seeded through splitmix64: small, fast, and reproducible across platforms and versions.
@@ -351,11 +383,8 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
     let mut targets: Vec<Vec<usize>> = vec![];
     for e in &opts.events {
         let mut t = vec![];
-        for &id in &e.tasks {
-            if id > n {
-                return Err(format!("risk {}: task {id} out of range (plan has {n} rows)", e.id));
-            }
-            let i = id - 1;
+        for r in &e.tasks {
+            let i = from_csv::resolve_ref(rows, r).map_err(|err| format!("risk {}: {err}", e.id))?;
             if net.summary[i] {
                 t.extend((i + 1..n).take_while(|&k| rows[k].level > rows[i].level).filter(|&k| leaf(k)));
             } else if leaf(i) {
@@ -380,11 +409,15 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
     let (mut sy, mut syy) = (0.0, 0.0);
     let ne = opts.events.len();
     let (mut hits, mut fin_hit) = (vec![0usize; ne], vec![0.0; ne]);
+    let has_cost = opts.events.iter().any(|e| e.cost.is_some());
+    let mut ev_cost = vec![0.0; ne];
+    let mut costs: Vec<f64> = Vec::with_capacity(if has_cost { opts.runs } else { 0 });
     for _ in 0..opts.runs {
         for i in 0..n {
             dur[i] = if leaf(i) { pert(&mut rng, est[i].0, est[i].1, est[i].2) * mpd } else { 0.0 };
         }
         let mut fired = vec![false; ne];
+        let mut run_cost = 0.0;
         for (k, e) in opts.events.iter().enumerate() {
             if rng.uniform() < e.probability {
                 fired[k] = true;
@@ -392,11 +425,19 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
                 for &i in &targets[k] {
                     dur[i] += imp;
                 }
+                if let Some((a, b, c)) = e.cost {
+                    let x = pert(&mut rng, a, b, c);
+                    run_cost += x;
+                    ev_cost[k] += x;
+                }
             }
         }
         let (es, ef) = net.forward(&dur);
         let f = net.topo.iter().map(|&i| ef[i]).fold(0.0, f64::max);
         finishes.push(f);
+        if has_cost {
+            costs.push(run_cost);
+        }
         let fd = f / mpd;
         sy += fd;
         syy += fd * fd;
@@ -440,10 +481,21 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
                 probability: e.probability,
                 hit_rate: h / runs,
                 mean_finish_impact_days: impact,
+                expected_cost: e.cost.map(|_| ev_cost[k] / runs),
             }
         })
         .collect();
     events.sort_by(|a, b| b.mean_finish_impact_days.unwrap_or(0.0).total_cmp(&a.mean_finish_impact_days.unwrap_or(0.0)));
+    let event_cost = has_cost.then(|| {
+        let mut sc = costs.clone();
+        sc.sort_by(f64::total_cmp);
+        let mut sf = finishes.clone();
+        sf.sort_by(f64::total_cmp);
+        let qq = |v: &[f64], x: f64| v[((x * runs) as usize).min(v.len() - 1)];
+        let (f80, c80) = (qq(&sf, 0.8), qq(&sc, 0.8));
+        let joint = finishes.iter().zip(&costs).filter(|(f, c)| **f <= f80 + 1e-9 && **c <= c80 + 1e-9).count() as f64 / runs;
+        CostRisk { mean: costs.iter().sum::<f64>() / runs, p50: qq(&sc, 0.5), p80: c80, p90: qq(&sc, 0.9), joint_p80: joint }
+    });
     finishes.sort_by(f64::total_cmp);
     let q = |x: f64| finishes[((x * runs) as usize).min(finishes.len() - 1)];
     let tl = &mut net.timeline;
@@ -478,6 +530,7 @@ pub fn simulate(rows: &[Row], today: NaiveDate, cal: &CalendarSpec, opts: &RiskO
         percentiles,
         tasks,
         events,
+        event_cost,
     })
 }
 
@@ -523,8 +576,21 @@ pub fn render_text(r: &RiskReport) -> String {
         for e in &r.events {
             let imp = e.mean_finish_impact_days.map(|v| format!("{v:+.1} wd")).unwrap_or_else(|| "n/a".into());
             let name: String = e.name.chars().take(40).collect();
-            let _ = writeln!(s, "  {:<8} {:<40} p={:4.0}% hit={:4.0}% {imp}", e.id, name, e.probability * 100.0, e.hit_rate * 100.0);
+            let cost = e.expected_cost.map(|c| format!("  E[cost]={c:.0}")).unwrap_or_default();
+            let _ = writeln!(s, "  {:<8} {:<40} p={:4.0}% hit={:4.0}% {imp}{cost}", e.id, name, e.probability * 100.0, e.hit_rate * 100.0);
         }
+    }
+    if let Some(c) = &r.event_cost {
+        let _ = writeln!(
+            s,
+            "Risk-event cost: mean {:.0}, P50 {:.0}, P80 {:.0}, P90 {:.0}; joint P80 (date and cost) {:.0}%",
+            c.mean,
+            c.p50,
+            c.p80,
+            c.p90,
+            c.joint_p80 * 100.0
+        );
+        let _ = writeln!(s, "  (event costs only; overtime and extended general conditions are not modelled)");
     }
     s
 }
@@ -598,8 +664,6 @@ mod tests {
 /// duration) and the status date is returned (the file's, or the latest actual date); a task's start is anchored with its SNET/MSO constraint date, or its actual/current start when it has no
 /// predecessors. The project summary (UID 0) and blank rows are skipped.
 pub fn rows_from_plan(plan: &crate::model::Plan) -> Result<(Vec<Row>, CalendarSpec, Option<NaiveDate>), String> {
-    use crate::calendar::CustomDay;
-    use chrono::Timelike;
     let hpd = if plan.minutes_per_day > 0 { plan.minutes_per_day as f64 / 60.0 } else { 8.0 };
     let tasks: Vec<&crate::model::TaskRec> =
         plan.tasks.iter().filter(|t| t.uid != 0 && !(t.name.trim().is_empty() && t.start.is_none() && t.finish.is_none())).collect();
@@ -636,6 +700,7 @@ pub fn rows_from_plan(plan: &crate::model::Plan) -> Result<(Vec<Row>, CalendarSp
             dur: if t.summary { 0.0 } else { t.duration_hours.max(0.0) / hpd },
             preds,
             level: (t.outline_level - min_level + 1).max(1),
+            activity_id: t.activity_id.clone(),
             res,
             actual_start: actual_start.filter(|_| actual_finish.is_some() || started),
             actual_finish: actual_finish.filter(|_| actual_start.is_some()),
@@ -643,33 +708,7 @@ pub fn rows_from_plan(plan: &crate::model::Plan) -> Result<(Vec<Row>, CalendarSp
             ..Default::default()
         });
     }
-    // Project calendar.
-    let mut spec = CalendarSpec { hours_per_day: hpd, ..Default::default() };
-    let cal = plan.default_calendar_uid.and_then(|u| plan.calendars.iter().find(|c| c.uid == u)).or(plan.calendars.first());
-    if let Some(c) = cal {
-        let m = |t: &chrono::NaiveTime| t.hour() * 60 + t.minute();
-        let conv = |r: &[(chrono::NaiveTime, chrono::NaiveTime)]| -> crate::calendar::Ranges {
-            r.iter().map(|(a, b)| (m(a), if m(b) == 0 { 1440 } else { m(b) })).filter(|(a, b)| b > a).collect()
-        };
-        for (i, d) in c.days.iter().enumerate() {
-            spec.week[i] = match d.working {
-                Some(false) => vec![],
-                Some(true) if !d.ranges.is_empty() => conv(&d.ranges),
-                _ => spec.week[i].clone(),
-            };
-        }
-        if spec.week.iter().all(|w| w.is_empty()) {
-            spec.week = CalendarSpec::default().week;
-        }
-        for e in &c.exceptions {
-            let mut d = e.from;
-            while d <= e.to && (d - e.from).num_days() <= 3660 {
-                spec.custom.push(CustomDay { date: d, name: e.name.clone(), ranges: if e.working { conv(&e.ranges) } else { vec![] } });
-                d = d.succ_opt().ok_or("date overflow")?;
-            }
-        }
-        spec.name = c.name.clone();
-    }
+    let spec = crate::calendar::spec_from_plan(plan);
     // Status date: the file's, else the latest actual date (so actuals are never "in the future").
     let status = plan.status_date.map(|d| d.date()).or_else(|| rows.iter().flat_map(|r| [r.actual_start, r.actual_finish]).flatten().max());
     let status = status.map(|sd| rows.iter().flat_map(|r| [r.actual_start, r.actual_finish]).flatten().fold(sd, |a, b| a.max(b)));
@@ -837,5 +876,29 @@ mod event_tests {
         assert!((imp - 5.0).abs() < 1e-6, "{imp}");
         assert_eq!(r.percentiles[3].working_days, 15.0);
         assert_eq!(r.percentiles[0].working_days, 10.0);
+    }
+
+    #[test]
+    fn risk_event_cost_and_activity_ids() {
+        let csv = "activity_id,name,duration,predecessors\nA10,Dig,5,\nA20,Pour,5,A10\nA30,Cure,3,A20FS+1\n";
+        let rows = crate::from_csv::parse_rows(csv).unwrap();
+        assert_eq!(rows[2].preds[0].0, 2);
+        assert_eq!(rows[2].preds[0].2, 1.0);
+        let ev = parse_events("id,probability,max_days,tasks,cost_min,cost_likely,cost_max\nR1,100%,2,A20,1000,1000,1000\n").unwrap();
+        let opts = RiskOptions { runs: 500, events: ev, ..Default::default() };
+        let r = simulate(&rows, NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(), &CalendarSpec::default(), &opts).unwrap();
+        let c = r.event_cost.unwrap();
+        assert!((c.mean - 1000.0).abs() < 1e-6 && (c.p80 - 1000.0).abs() < 1e-6);
+        assert!((r.events[0].expected_cost.unwrap() - 1000.0).abs() < 1e-6);
+        let bad = parse_events("id,probability,max_days,tasks\nR1,1,2,ZZZ\n").unwrap();
+        assert!(
+            simulate(
+                &rows,
+                NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+                &CalendarSpec::default(),
+                &RiskOptions { events: bad, ..Default::default() }
+            )
+            .is_err()
+        );
     }
 }

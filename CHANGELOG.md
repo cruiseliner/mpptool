@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.0 — activity IDs, calendar-aware reports, risk-event cost
+- `from-csv`: optional `activity_id` (or `id`) column. Predecessors may name activity IDs (`A1010`, `A1010SS+2`, `A1010FF-1d`); plain numbers are still row numbers, and `#3` forces a row number. IDs must be unique and are written to the XML as Text1 ("Activity ID"). Activity IDs read from P6/MSP files are carried into `cpm`/`risk`.
+- Progress CSV `id` (or `activity_id`) matches the activity ID first, then the row number. Risk-event `tasks` resolve the same way.
+- Risk events: optional `cost_min`, `cost_likely`, `cost_max`. `risk` then reports expected cost per event, a risk-event cost distribution (mean/P50/P80/P90) and the joint P80 (share of runs within both the P80 date and P80 cost). Overtime and extended general-conditions cost are not modelled. Runs without cost columns give the same results as before for the same seed.
+- `compare`, `variance`, `board`, `portfolio` and the DCMA CPLI in `check` now count working days on the schedule's own project calendar (holidays, 6-day weeks) instead of Mon–Fri.
+- `resources-load`: spreads work over the calendar's actual working hours and measures capacity per week from the calendar (e.g. 55 h for 5×10 h + Saturday 5 h; holiday weeks have less). CSV `capacity_hours` is per week. Fixes false over-allocation with 10-hour days and Saturday overtime.
+- `from-csv`: MSPDI `MinutesPerWeek` is the calendar's real weekly working time (it was hours/day × working days).
+- Library: `from_csv::resolve_ref`, `calendar::{spec_from_plan, plan_calendar}`, `WorkCalendar::{working_days_between, minutes_on, minutes_between}`, `workdays::slip_days_cal`, `variance::planned_fraction_cal`; `RiskEvent.tasks` is now `Vec<String>` and gained `cost`; `RiskReport.event_cost`; `Row.activity_id`.
+
 ## v0.8.0 — risk events, progress updates, leveling, DCMA options
 - `risk`: discrete risk events from a RAID CSV (`--risks`: id, name, probability, min/likely/max impact days, linked tasks). One sampled impact hits every linked task (common cause). Per-task uncertainty classes (`uncertainty` column: labor, equipment, design, vendor, permit, weather, fixed; `--class name=o,p` overrides). Sensitivity (duration–finish correlation, tornado list) and per-event hit rate and mean finish impact in text and `--json`.
 - Status updates: `--progress progress.csv --status-date D` on `from-csv`, `cpm` and `risk` (actual start/finish, remaining days, % complete). Remaining work is scheduled after the status date, and actuals, % complete and the status date are written to the XML. Imported schedules carry their own progress and status date into `cpm`/`risk`.

@@ -24,6 +24,11 @@ pub fn slip_days(old: Option<NaiveDateTime>, new: Option<NaiveDateTime>) -> Opti
     Some(working_days_between(old?.date(), new?.date()))
 }
 
+/// Working-day slip between two optional timestamps on a plan's calendar (holidays and custom weeks honoured).
+pub fn slip_days_cal(cal: &crate::calendar::WorkCalendar, old: Option<NaiveDateTime>, new: Option<NaiveDateTime>) -> Option<i64> {
+    Some(cal.working_days_between(old?.date(), new?.date()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

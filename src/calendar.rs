@@ -373,6 +373,82 @@ impl Timeline {
     }
 }
 
+/// The project calendar of a parsed plan (default calendar, else the first, else Standard) as a [`CalendarSpec`].
+pub fn spec_from_plan(plan: &crate::model::Plan) -> CalendarSpec {
+    let hpd = if plan.minutes_per_day > 0 { plan.minutes_per_day as f64 / 60.0 } else { 8.0 };
+    let mut spec = CalendarSpec { hours_per_day: hpd, ..Default::default() };
+    let cal = plan.default_calendar_uid.and_then(|u| plan.calendars.iter().find(|c| c.uid == u)).or(plan.calendars.first());
+    if let Some(c) = cal {
+        let m = |t: &NaiveTime| t.hour() * 60 + t.minute();
+        let conv = |r: &[(NaiveTime, NaiveTime)]| -> Ranges {
+            r.iter().map(|(a, b)| (m(a), if m(b) == 0 { 1440 } else { m(b) })).filter(|(a, b)| b > a).collect()
+        };
+        for (i, d) in c.days.iter().enumerate() {
+            spec.week[i] = match d.working {
+                Some(false) => vec![],
+                Some(true) if !d.ranges.is_empty() => conv(&d.ranges),
+                _ => spec.week[i].clone(),
+            };
+        }
+        if spec.week.iter().all(|w| w.is_empty()) {
+            spec.week = CalendarSpec::default().week;
+        }
+        for e in &c.exceptions {
+            let mut d = e.from;
+            while d <= e.to && (d - e.from).num_days() <= 3660 {
+                spec.custom.push(CustomDay { date: d, name: e.name.clone(), ranges: if e.working { conv(&e.ranges) } else { vec![] } });
+                match d.succ_opt() {
+                    Some(n) => d = n,
+                    None => break,
+                }
+            }
+        }
+        spec.name = c.name.clone();
+    }
+    spec
+}
+
+/// The resolved project calendar of a plan; falls back to Standard (Mon–Fri) if the file's calendar is unusable.
+pub fn plan_calendar(plan: &crate::model::Plan) -> WorkCalendar {
+    let y = plan.start.map(|d| d.year()).unwrap_or(2000);
+    spec_from_plan(plan).resolve(y).or_else(|_| CalendarSpec::default().resolve(y)).expect("standard calendar resolves")
+}
+
+impl WorkCalendar {
+    /// Signed number of working days from `a` to `b`: working days `d` with `a < d <= b` (0 on the same day).
+    pub fn working_days_between(&self, a: NaiveDate, b: NaiveDate) -> i64 {
+        if b < a {
+            return -self.working_days_between(b, a);
+        }
+        let mut n = 0;
+        let mut d = a;
+        while d < b {
+            d = match d.succ_opt() {
+                Some(x) => x,
+                None => break,
+            };
+            if self.is_work(d) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Working minutes on date `d`.
+    pub fn minutes_on(&self, d: NaiveDate) -> f64 {
+        self.ranges(d).iter().map(|(a, b)| (b - a) as f64).sum()
+    }
+
+    /// Working minutes between two timestamps (0 when `b <= a`).
+    pub fn minutes_between(&self, a: NaiveDateTime, b: NaiveDateTime) -> f64 {
+        if b <= a {
+            return 0.0;
+        }
+        let mut t = Timeline::new(self.clone(), a.date());
+        (t.pos_of_dt(b) - t.pos_of_dt(a)).max(0.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

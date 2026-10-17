@@ -1,7 +1,7 @@
 //! Kanban board (Not started / In progress / Done) with RAG flags.
 use crate::gantt::esc;
 use crate::model::{Plan, TaskRec};
-use crate::workdays::slip_days;
+use crate::workdays::slip_days_cal;
 use chrono::NaiveDateTime;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -40,6 +40,7 @@ pub const COLUMNS: [&str; 3] = ["Not started", "In progress", "Done"];
 /// amber = not started although its start has passed, finish 1–5 working days later than baseline, or a
 /// critical task in progress; green otherwise. Done tasks are green.
 pub fn cards(plan: &Plan, at: NaiveDateTime) -> Vec<Card> {
+    let cal = crate::calendar::plan_calendar(plan);
     let names: HashMap<i32, &str> = plan.resources.iter().map(|r| (r.uid, r.name.as_str())).collect();
     let mut res: HashMap<i32, Vec<String>> = HashMap::new();
     for a in &plan.assignments {
@@ -78,7 +79,7 @@ pub fn cards(plan: &Plan, at: NaiveDateTime) -> Vec<Card> {
             if t.total_slack_hours.is_some_and(|f| f < -0.01) {
                 red.push("negative float".into());
             }
-            match slip_days(t.baseline_finish, t.finish) {
+            match slip_days_cal(&cal, t.baseline_finish, t.finish) {
                 Some(d) if d > 5 => red.push(format!("{d} wd late vs baseline")),
                 Some(d) if d > 0 => amber.push(format!("{d} wd late vs baseline")),
                 _ => {}

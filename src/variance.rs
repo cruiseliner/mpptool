@@ -1,6 +1,7 @@
 //! Baseline variance and earned value.
+use crate::calendar::WorkCalendar;
 use crate::model::{Plan, TaskRec};
-use crate::workdays::{slip_days, working_days_between};
+use crate::workdays::slip_days_cal;
 use chrono::NaiveDateTime;
 use serde::Serialize;
 
@@ -63,9 +64,16 @@ pub struct VarianceReport {
     pub tasks: Vec<TaskVariance>,
 }
 
-/// Fraction of the baseline that should be done at `at`: linear over the baseline's Mon–Fri working days,
-/// counting the status date itself as worked.
+/// Fraction of the baseline that should be done at `at`: linear over the baseline's working days on the
+/// Standard (Mon–Fri) calendar, counting the status date itself as worked.
 pub fn planned_fraction(t: &TaskRec, at: NaiveDateTime) -> Option<f64> {
+    let cal = crate::calendar::CalendarSpec::default().resolve(2000).expect("standard calendar");
+    planned_fraction_cal(&cal, t, at)
+}
+
+/// [`planned_fraction`] on calendar `cal` (the plan's project calendar).
+pub fn planned_fraction_cal(cal: &WorkCalendar, t: &TaskRec, at: NaiveDateTime) -> Option<f64> {
+    let working_days_between = |a, b| cal.working_days_between(a, b);
     let (s, f) = (t.baseline_start?, t.baseline_finish?);
     Some(if at >= f {
         1.0
@@ -81,6 +89,7 @@ pub fn planned_fraction(t: &TaskRec, at: NaiveDateTime) -> Option<f64> {
 /// Build the variance report. `status` falls back to the plan's status date.
 pub fn variance(plan: &Plan, status: Option<NaiveDateTime>) -> VarianceReport {
     let status = status.or(plan.status_date);
+    let cal = crate::calendar::plan_calendar(plan);
     let has_cost = plan.tasks.iter().any(|t| !t.summary && t.baseline_finish.is_some() && t.baseline_cost.is_some_and(|c| c > 0.0));
     let mut ev_tot = EarnedValue::default();
     let mut tasks = Vec::new();
@@ -89,7 +98,7 @@ pub fn variance(plan: &Plan, status: Option<NaiveDateTime>) -> VarianceReport {
         let finish = t.actual_finish.or(t.finish);
         let bac = t.baseline_cost.filter(|_| has_cost);
         let pv = match (bac, status) {
-            (Some(b), Some(sd)) => planned_fraction(t, sd).map(|f| b * f),
+            (Some(b), Some(sd)) => planned_fraction_cal(&cal, t, sd).map(|f| b * f),
             _ => None,
         };
         let ev = bac.map(|b| b * t.percent_complete.clamp(0.0, 100.0) / 100.0);
@@ -111,8 +120,8 @@ pub fn variance(plan: &Plan, status: Option<NaiveDateTime>) -> VarianceReport {
             baseline_finish: t.baseline_finish,
             start,
             finish,
-            start_slip_days: slip_days(t.baseline_start, start),
-            finish_slip_days: slip_days(t.baseline_finish, finish),
+            start_slip_days: slip_days_cal(&cal, t.baseline_start, start),
+            finish_slip_days: slip_days_cal(&cal, t.baseline_finish, finish),
             duration_variance_hours: t.baseline_duration_hours.map(|b| ((t.duration_hours - b) * 100.0).round() / 100.0),
             percent_complete: t.percent_complete,
             pv,
@@ -140,7 +149,7 @@ pub fn variance(plan: &Plan, status: Option<NaiveDateTime>) -> VarianceReport {
         tasks_with_baseline: leaf().count(),
         late_finishes: leaf().filter(|t| t.finish_slip_days.is_some_and(|d| d > 0)).count(),
         max_finish_slip_days: leaf().filter_map(|t| t.finish_slip_days).max(),
-        project_finish_slip_days: slip_days(latest(&|t| t.baseline_finish), latest(&|t| t.actual_finish.or(t.finish))),
+        project_finish_slip_days: slip_days_cal(&cal, latest(&|t| t.baseline_finish), latest(&|t| t.actual_finish.or(t.finish))),
         earned_value,
         tasks,
     }

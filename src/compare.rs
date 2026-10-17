@@ -1,7 +1,7 @@
 //! Compare two versions of a schedule.
 use crate::gantt::esc;
 use crate::model::{Plan, TaskRec, fmt_dt};
-use crate::workdays::slip_days;
+use crate::workdays::slip_days_cal;
 use chrono::NaiveDateTime;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
@@ -100,6 +100,8 @@ fn links(t: &TaskRec, keys: &HashMap<i32, String>) -> BTreeSet<String> {
 
 /// Compare `old` with `new`.
 pub fn compare(old: &Plan, new: &Plan, by: MatchBy) -> Comparison {
+    // Slip is counted on the new plan's project calendar (holidays and custom work weeks honoured).
+    let cal = crate::calendar::plan_calendar(new);
     let by = match by {
         MatchBy::Auto if old.tasks.iter().any(|t| t.activity_id.is_some()) && new.tasks.iter().any(|t| t.activity_id.is_some()) => {
             MatchBy::ActivityId
@@ -130,7 +132,7 @@ pub fn compare(old: &Plan, new: &Plan, by: MatchBy) -> Comparison {
         changed: vec![],
         unchanged: 0,
     };
-    c.finish_slip_days = slip_days(c.old_finish, c.new_finish);
+    c.finish_slip_days = slip_days_cal(&cal, c.old_finish, c.new_finish);
     for k in &old_order {
         if !new_map.contains_key(k) {
             c.removed.push(tref(k, old_map[k]));
@@ -151,8 +153,8 @@ pub fn compare(old: &Plan, new: &Plan, by: MatchBy) -> Comparison {
         if by != MatchBy::Name {
             push("name", o.name.clone(), n.name.clone(), None);
         }
-        push("start", fmt_dt(&o.start), fmt_dt(&n.start), slip_days(o.start, n.start).map(|d| d as f64));
-        push("finish", fmt_dt(&o.finish), fmt_dt(&n.finish), slip_days(o.finish, n.finish).map(|d| d as f64));
+        push("start", fmt_dt(&o.start), fmt_dt(&n.start), slip_days_cal(&cal, o.start, n.start).map(|d| d as f64));
+        push("finish", fmt_dt(&o.finish), fmt_dt(&n.finish), slip_days_cal(&cal, o.finish, n.finish).map(|d| d as f64));
         let r = |h: f64| (h * 100.0).round() / 100.0;
         push(
             "duration_hours",
