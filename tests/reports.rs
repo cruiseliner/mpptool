@@ -178,6 +178,17 @@ fn variance_and_earned_value() {
     assert_eq!(ev["sv"], -1500.0);
     assert!((ev["spi"].as_f64().unwrap() - 8000.0 / 9500.0).abs() < 1e-9);
     assert!((ev["cpi"].as_f64().unwrap() - 8000.0 / 8900.0).abs() < 1e-9);
+    // EAC forms, TCPI and earned schedule.
+    assert_eq!(ev["eac_atypical"], 27500.0); // AC + (BAC − EV)
+    let (cpi, spi) = (8000.0 / 8900.0, 8000.0 / 9500.0);
+    assert!((ev["eac_cpi_spi"].as_f64().unwrap() - (8900.0 + 18600.0 / (cpi * spi))).abs() < 1e-6);
+    assert!((ev["tcpi"].as_f64().unwrap() - 18600.0 / 17700.0).abs() < 1e-9);
+    let es = &ev["earned_schedule"];
+    assert_eq!(es["actual_time_days"], 10.0);
+    let (esd, at) = (es["es_days"].as_f64().unwrap(), 10.0);
+    assert!(esd > 8.0 && esd < at, "behind schedule: ES {esd} < AT");
+    assert!((es["spi_t"].as_f64().unwrap() - esd / at).abs() < 1e-9);
+    assert!((es["ieac_t_days"].as_f64().unwrap() - es["planned_duration_days"].as_f64().unwrap() / (esd / at)).abs() < 1e-9);
     let survey = v["tasks"].as_array().unwrap().iter().find(|t| t["name"] == "Survey").unwrap();
     assert_eq!(survey["finish_slip_days"], 1);
     assert_eq!(survey["duration_variance_hours"], 8.0);

@@ -164,12 +164,14 @@ mpptool variance plan.mpp --csv --status-date 2026-06-30 > variance.csv
 ```
 
 `compare` matches tasks by unique ID (Microsoft Project UIDs are stable across saves), or by Activity ID when
-both files have them (Primavera). It reports tasks added and removed, and for matched tasks changes to name,
+both files have them (Primavera, or plans from `from-csv` with an `activity_id` column). Activity IDs are read from
+any MS Project custom text field whose alias is "Activity ID" (mpptool writes Text1), so they survive an MS Project
+re-save even if UIDs are renumbered or the field moves; use `--match activity-id` to insist on it. It reports tasks added and removed, and for matched tasks changes to name,
 start, finish (with the shift in working days), duration, % complete, milestone flag and predecessor links
 (type and lag), plus the movement of the project finish.
 
 `variance` lists every task with a baseline: baseline vs current dates (actual dates when the task has
-them), start and finish slip in Mon–Fri working days, and duration variance. When the file has baseline costs
+them), start and finish slip in working days of the project calendar, and duration variance. When the file has baseline costs
 it adds earned value at the status date (from the file or `--status-date`):
 
 | Metric | Meaning |
@@ -180,7 +182,12 @@ it adds earned value at the status date (from the file or `--status-date`):
 | AC (ACWP) | actual cost |
 | SV / CV | EV − PV / EV − AC |
 | SPI / CPI | EV / PV / EV / AC |
-| EAC | BAC / CPI |
+| EAC | BAC / CPI (typical) |
+| EAC (atypical) | AC + (BAC − EV) |
+| EAC (CPI×SPI) | AC + (BAC − EV) / (CPI × SPI) |
+| TCPI | (BAC − EV) / (BAC − AC): efficiency needed to finish on budget |
+| ES, SV(t), SPI(t) | earned schedule: the working day at which baseline PV equals EV; ES − AT; ES / AT |
+| IEAC(t) | planned duration / SPI(t), in working days, with a forecast finish date |
 
 Totals are summed over non-summary tasks. Primavera files carry no baselines (P6 keeps baselines as separate
 projects), so `variance` reports "no baseline" for them; `compare` an older export with the current one instead.
@@ -192,7 +199,7 @@ mpptool resources-load plan.mpp load.html   # heat map: resources × weeks, red 
 mpptool resources-load plan.xer load.csv    # resource_uid,resource,week_start,hours,capacity_hours,over_allocated
 ```
 
-Each assignment's work is spread evenly over its Mon–Fri working days and summed per week (weeks start on
+Each assignment's work is spread over the working hours of the project calendar and summed per week (weeks start on
 Monday). Weekly capacity is the resource's max units × the plan's hours per week (40 h by default).
 Material and cost resources are left out. Over-allocation is judged per week, not per day.
 
@@ -370,6 +377,21 @@ The cost columns are optional. With them, `risk` reports each event's expected c
 
 In each run, an event fires with its probability. When it fires, one impact is sampled and added to **every** linked task (activity IDs or row numbers; a summary row means all of its tasks), so one cause hitting several tasks is modelled as one correlated hit. The report adds each task's **sensitivity** (Pearson correlation of its sampled duration with the finish, shown as a tornado list) and, for each event, its hit rate and mean finish impact (mean finish when it fires minus when it does not).
 
+#### Uncertainty for imported schedules
+
+`.mpp`/`.xer`/XML files carry no three-point estimates or classes, so `risk` on them uses `--opt`/`--pess`. Give a
+sidecar CSV keyed by activity ID (or `row`, or `name`) to keep your uncertainty after handoff:
+
+```csv
+activity_id,uncertainty,optimistic,pessimistic
+A1050,vendor,,
+A1080,,4,9
+```
+
+```bash
+mpptool risk schedule.mpp --uncertainty uncertainty.csv --risks risks.csv
+```
+
 ### Status updates (progress.csv)
 
 ```bash
@@ -426,7 +448,7 @@ Before release, every one of 606 sample `.mpp` files from MPXJ's test suite conv
 - `risk` samples task durations independently (risk events give common-cause correlation; there is no general correlation matrix).
 - Duration months are converted as 20 working days.
 - `check` test 12 (critical path test) is a static continuity check, not DCMA's delay-and-reschedule test.
-- `compare`/`variance` count slip in Mon–Fri working days and ignore holidays; PV assumes work spread evenly over the baseline, not the timephased baseline.
+- `compare`/`variance` count slip on the project calendar (no task calendars); PV and earned schedule assume work spread evenly over each baseline, not the timephased baseline.
 - `resources-load` spreads work evenly (no work contours, timephased data or per-resource calendars).
 - `board` and `portfolio` RAG rules are fixed (documented above), not configurable yet.
 - The readers are young (2026) ports of MPXJ, so expect rough edges on unusual files.

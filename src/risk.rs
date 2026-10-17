@@ -72,6 +72,72 @@ pub struct RiskEvent {
     pub cost: Option<(f64, f64, f64)>,
 }
 
+/// Apply an uncertainty sidecar CSV to rows (for imported schedules, whose files carry no three-point data).
+/// Key column: `activity_id`, `id` or `row` (activity ID, else 1-based row; see [`from_csv::resolve_ref`]) or `name`.
+/// Value columns: `uncertainty` (class), `optimistic`, `pessimistic` (days). Returns the number of rows changed.
+pub fn apply_uncertainty(rows: &mut [Row], text: &str) -> Result<usize, String> {
+    let mut rdr = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::All).comment(Some(b'#')).from_reader(text.as_bytes());
+    let hdr: Vec<String> = rdr.headers().map_err(|e| format!("uncertainty CSV header: {e}"))?.iter().map(|h| h.to_lowercase()).collect();
+    let col = |names: &[&str]| names.iter().find_map(|n| hdr.iter().position(|h| h == n));
+    let ck = col(&["activity_id", "id", "row"]);
+    let cn = col(&["name"]);
+    if ck.is_none() && cn.is_none() {
+        return Err("uncertainty CSV needs an 'activity_id' (or id/row) or 'name' column".into());
+    }
+    let (cu, co, cp) = (col(&["uncertainty", "class"]), col(&["optimistic", "o"]), col(&["pessimistic", "p"]));
+    let mut n = 0;
+    for (k, rec) in rdr.records().enumerate() {
+        let line = k + 2;
+        let rec = rec.map_err(|e| format!("uncertainty line {line}: {e}"))?;
+        let g = |c: Option<usize>| c.and_then(|c| rec.get(c)).unwrap_or("").trim().to_string();
+        if rec.iter().all(|f| f.trim().is_empty()) {
+            continue;
+        }
+        let i = match (g(ck), g(cn)) {
+            (key, _) if !key.is_empty() => from_csv::resolve_ref(rows, &key).map_err(|e| format!("uncertainty line {line}: {e}"))?,
+            (_, nm) if !nm.is_empty() => {
+                let hits: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| r.name.eq_ignore_ascii_case(&nm)).map(|(i, _)| i).collect();
+                match hits.as_slice() {
+                    [i] => *i,
+                    [] => return Err(format!("uncertainty line {line}: no task named '{nm}'")),
+                    _ => return Err(format!("uncertainty line {line}: several tasks named '{nm}'; use activity_id")),
+                }
+            }
+            _ => continue,
+        };
+        let num = |c: Option<usize>, what: &str| -> Result<Option<f64>, String> {
+            match g(c).as_str() {
+                "" => Ok(None),
+                v => v
+                    .trim_end_matches(['d', 'D'])
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite() && *x >= 0.0)
+                    .map(Some)
+                    .ok_or(format!("uncertainty line {line}: bad {what} '{v}'")),
+            }
+        };
+        let (o, p, u) = (num(co, "optimistic")?, num(cp, "pessimistic")?, g(cu));
+        if let (Some(o), Some(p)) = (o, p)
+            && o > p
+        {
+            return Err(format!("uncertainty line {line}: optimistic > pessimistic"));
+        }
+        let r = &mut rows[i];
+        if !u.is_empty() {
+            r.uncertainty = Some(u);
+        }
+        if o.is_some() {
+            r.optimistic = o;
+        }
+        if p.is_some() {
+            r.pessimistic = p;
+        }
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// Parse a RAID risk CSV: `id, name, probability, min_days, likely_days, max_days, tasks` (header required,
 /// case-insensitive; `probability` as 0.3 or 30%; `tasks` = row numbers separated by `;`). Short forms `p`, `min`,
 /// `likely`/`ml`, `max` are accepted.

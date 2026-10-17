@@ -2,7 +2,7 @@
 use crate::calendar::WorkCalendar;
 use crate::model::{Plan, TaskRec};
 use crate::workdays::slip_days_cal;
-use chrono::NaiveDateTime;
+use chrono::{NaiveDate, NaiveDateTime};
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -47,8 +47,35 @@ pub struct EarnedValue {
     pub spi: Option<f64>,
     /// Cost performance index EV / AC.
     pub cpi: Option<f64>,
-    /// Estimate at completion BAC / CPI.
+    /// Estimate at completion BAC / CPI (typical: current cost efficiency continues).
     pub eac: Option<f64>,
+    /// EAC = AC + (BAC − EV) (atypical: remaining work at budget rate).
+    pub eac_atypical: Option<f64>,
+    /// EAC = AC + (BAC − EV) / (CPI × SPI) (cost and schedule both drive the remaining work).
+    pub eac_cpi_spi: Option<f64>,
+    /// To-complete performance index (BAC − EV) / (BAC − AC) needed to finish on budget.
+    pub tcpi: Option<f64>,
+    /// Earned schedule (`None` without a status date or baseline dates).
+    pub earned_schedule: Option<EarnedSchedule>,
+}
+
+/// Earned schedule (Lipke): time-based schedule metrics, in working days of the project calendar.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct EarnedSchedule {
+    /// Planned duration: baseline start to baseline finish (working days).
+    pub planned_duration_days: f64,
+    /// Actual time: baseline start through the status date (working days).
+    pub actual_time_days: f64,
+    /// Earned schedule: the time at which the baseline PV equals the current EV (working days).
+    pub es_days: f64,
+    /// SV(t) = ES − AT (working days; negative = behind).
+    pub sv_t_days: f64,
+    /// SPI(t) = ES / AT.
+    pub spi_t: Option<f64>,
+    /// IEAC(t) = PD / SPI(t), the forecast duration (working days).
+    pub ieac_t_days: Option<f64>,
+    /// Forecast finish date from IEAC(t).
+    pub ieac_t_finish: Option<NaiveDate>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -83,6 +110,72 @@ pub fn planned_fraction_cal(cal: &WorkCalendar, t: &TaskRec, at: NaiveDateTime) 
         let total = working_days_between(s.date(), f.date()) + 1;
         let done = working_days_between(s.date(), at.date()) + 1;
         (done as f64 / total.max(1) as f64).clamp(0.0, 1.0)
+    })
+}
+
+/// Earned schedule from the baseline PV curve (per working day on `cal`) and the current EV.
+pub fn earned_schedule(plan: &Plan, cal: &WorkCalendar, status: NaiveDateTime, ev: f64) -> Option<EarnedSchedule> {
+    let leaves: Vec<&TaskRec> = plan.tasks.iter().filter(|t| !t.summary && t.baseline_cost.is_some_and(|c| c > 0.0)).collect();
+    let s = leaves.iter().filter_map(|t| t.baseline_start).min()?.date();
+    let f = leaves.iter().filter_map(|t| t.baseline_finish).max()?.date();
+    let mut days = vec![];
+    let mut d = s;
+    while d <= f && days.len() < 100_000 {
+        if cal.minutes_on(d) > 0.0 {
+            days.push(d);
+        }
+        d = d.succ_opt()?;
+    }
+    if days.is_empty() {
+        return None;
+    }
+    let pv_at = |d: NaiveDate| -> f64 {
+        let at = d.and_hms_opt(12, 0, 0).unwrap_or_default();
+        leaves.iter().map(|t| t.baseline_cost.unwrap_or(0.0) * planned_fraction_cal(cal, t, at).unwrap_or(0.0)).sum()
+    };
+    let curve: Vec<f64> = days.iter().map(|&d| pv_at(d)).collect();
+    let pd = days.len() as f64;
+    let at = if status.date() < s {
+        0.0
+    } else {
+        days.iter().filter(|&&d| d <= status.date()).count() as f64 + (cal.working_days_between(f, status.date()).max(0)) as f64
+    };
+    // ES: whole days whose cumulative PV <= EV, plus the linear fraction into the next day.
+    let k = curve.iter().take_while(|&&p| p <= ev + 1e-9).count();
+    let es = if k >= curve.len() {
+        pd
+    } else {
+        let prev = if k == 0 { 0.0 } else { curve[k - 1] };
+        k as f64 + if curve[k] > prev { ((ev - prev) / (curve[k] - prev)).clamp(0.0, 1.0) } else { 0.0 }
+    };
+    let spi_t = (at > 0.0).then(|| es / at);
+    let ieac = spi_t.filter(|v| *v > 0.0).map(|v| pd / v);
+    let ieac_finish = ieac.map(|n| {
+        let target = n.ceil().max(1.0) as usize;
+        let mut d = s;
+        let mut c = 0;
+        while c < target {
+            if cal.minutes_on(d) > 0.0 {
+                c += 1;
+                if c == target {
+                    break;
+                }
+            }
+            match d.succ_opt() {
+                Some(x) => d = x,
+                None => break,
+            }
+        }
+        d
+    });
+    Some(EarnedSchedule {
+        planned_duration_days: pd,
+        actual_time_days: at,
+        es_days: es,
+        sv_t_days: es - at,
+        spi_t,
+        ieac_t_days: ieac,
+        ieac_t_finish: ieac_finish,
     })
 }
 
@@ -138,6 +231,13 @@ pub fn variance(plan: &Plan, status: Option<NaiveDateTime>) -> VarianceReport {
         e.spi = (e.pv > 0.0 && status.is_some()).then(|| e.ev / e.pv);
         e.cpi = (e.ac > 0.0).then(|| e.ev / e.ac);
         e.eac = e.cpi.filter(|c| *c > 0.0).map(|c| e.bac / c);
+        e.eac_atypical = (e.ac > 0.0 || e.ev > 0.0).then_some(e.ac + (e.bac - e.ev));
+        e.eac_cpi_spi = match (e.cpi, e.spi) {
+            (Some(c), Some(sp)) if c * sp > 0.0 => Some(e.ac + (e.bac - e.ev) / (c * sp)),
+            _ => None,
+        };
+        e.tcpi = ((e.bac - e.ac).abs() > 1e-9).then(|| (e.bac - e.ev) / (e.bac - e.ac));
+        e.earned_schedule = status.and_then(|sd| earned_schedule(plan, &cal, sd, e.ev));
         if status.is_none() {
             e.sv = 0.0;
         }
