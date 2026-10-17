@@ -1,0 +1,4 @@
+id,name,probability,min_days,likely_days,max_days,tasks
+R1,Switchgear ships late (vendor capacity),30%,5,10,20,5
+R2,AHJ inspection backlog (common cause),25%,2,3,6,15
+R3,Unforeseen underground conditions,20%,2,4,8,8
