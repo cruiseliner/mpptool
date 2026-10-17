@@ -56,11 +56,95 @@ pub struct Comparison {
     pub removed: Vec<TaskRef>,
     pub changed: Vec<TaskChange>,
     pub unchanged: usize,
+    /// How the matched tasks were keyed, and which tasks fell back from activity-ID matching.
+    pub coverage: MatchCoverage,
+}
+
+/// Match coverage: a deleted Activity ID alias degrades a task to UID matching silently, so it is counted here.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct MatchCoverage {
+    /// Matched task pairs keyed by activity ID.
+    pub by_activity_id: usize,
+    /// Matched task pairs keyed by unique ID (all of them in UID mode; fallbacks in activity-ID mode).
+    pub by_uid: usize,
+    /// Matched task pairs keyed by name.
+    pub by_name: usize,
+    /// Tasks without an activity ID in the old / new plan while matching by activity ID (keyed `uid:N` instead).
+    pub old_uid_fallback: usize,
+    pub new_uid_fallback: usize,
+    /// Those tasks, as `old`/`new` refs.
+    pub fallback_tasks: Vec<FallbackTask>,
+    /// UID-matched pairs whose names differ: likely mis-paired after an MS Project re-save renumbered UIDs.
+    pub name_mismatches: Vec<NameMismatch>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct NameMismatch {
+    pub key: String,
+    pub old_name: String,
+    pub new_name: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct FallbackTask {
+    pub plan: String,
+    pub key: String,
+    pub id: Option<i32>,
+    pub name: String,
+}
+
+impl MatchCoverage {
+    pub fn fallback(&self) -> usize {
+        self.old_uid_fallback + self.new_uid_fallback
+    }
+    /// One-line summary, e.g. `matched 12 by activity_id, 1 by uid (fallback)`.
+    pub fn summary(&self, matched_by: &str) -> String {
+        match matched_by {
+            "activity_id" => format!("matched {} by activity_id, {} by uid (fallback)", self.by_activity_id, self.by_uid),
+            "name" => format!("matched {} by name", self.by_name),
+            _ => format!("matched {} by uid", self.by_uid),
+        }
+    }
+    /// Number of findings that make `compare --strict` fail (UID fallbacks + UID-matched name mismatches).
+    pub fn strict_failures(&self) -> usize {
+        self.fallback() + self.name_mismatches.len()
+    }
+    /// Warning for UID-matched pairs whose names differ.
+    pub fn name_warning(&self) -> Option<String> {
+        (!self.name_mismatches.is_empty()).then(|| {
+            let mut v: Vec<String> =
+                self.name_mismatches.iter().take(10).map(|m| format!("[{}] '{}' → '{}'", m.key, m.old_name, m.new_name)).collect();
+            if self.name_mismatches.len() > 10 {
+                v.push(format!("… {} more", self.name_mismatches.len() - 10));
+            }
+            format!(
+                "WARNING: {} UID-matched task(s) changed name; check for mis-pairing after UID renumbering: {}",
+                self.name_mismatches.len(),
+                v.join("; ")
+            )
+        })
+    }
+    /// Warning when tasks fell back from activity-ID matching (e.g. an alias was deleted in one file).
+    pub fn warning(&self) -> Option<String> {
+        (self.fallback() > 0).then(|| {
+            let mut names: Vec<String> =
+                self.fallback_tasks.iter().take(10).map(|t| format!("{} [{}] {}", t.plan, t.key, t.name)).collect();
+            if self.fallback_tasks.len() > 10 {
+                names.push(format!("… {} more", self.fallback_tasks.len() - 10));
+            }
+            format!(
+                "WARNING: {} task(s) in the old plan and {} in the new plan have no activity ID and were matched by UID; a deleted alias shows up as removed+added: {}",
+                self.old_uid_fallback,
+                self.new_uid_fallback,
+                names.join("; ")
+            )
+        })
+    }
 }
 
 fn key_of(t: &TaskRec, by: MatchBy) -> String {
     match by {
-        MatchBy::ActivityId => t.activity_id.clone().unwrap_or_else(|| format!("uid:{}", t.uid)),
+        MatchBy::ActivityId => t.activity_id.clone().filter(|a| !a.trim().is_empty()).unwrap_or_else(|| format!("uid:{}", t.uid)),
         MatchBy::Name => t.name.trim().to_lowercase(),
         _ => t.uid.to_string(),
     }
@@ -131,7 +215,21 @@ pub fn compare(old: &Plan, new: &Plan, by: MatchBy) -> Comparison {
         removed: vec![],
         changed: vec![],
         unchanged: 0,
+        coverage: MatchCoverage::default(),
     };
+    if by == MatchBy::ActivityId {
+        for (plan, order, map) in [("old", &old_order, &old_map), ("new", &new_order, &new_map)] {
+            for k in order.iter().filter(|k| k.starts_with("uid:")) {
+                let t = map[k];
+                c.coverage.fallback_tasks.push(FallbackTask { plan: plan.into(), key: k.clone(), id: t.id, name: t.name.clone() });
+                if plan == "old" {
+                    c.coverage.old_uid_fallback += 1;
+                } else {
+                    c.coverage.new_uid_fallback += 1;
+                }
+            }
+        }
+    }
     c.finish_slip_days = slip_days_cal(&cal, c.old_finish, c.new_finish);
     for k in &old_order {
         if !new_map.contains_key(k) {
@@ -144,6 +242,16 @@ pub fn compare(old: &Plan, new: &Plan, by: MatchBy) -> Comparison {
             c.added.push(tref(k, n));
             continue;
         };
+        match by {
+            MatchBy::ActivityId if !k.starts_with("uid:") => c.coverage.by_activity_id += 1,
+            MatchBy::Name => c.coverage.by_name += 1,
+            _ => {
+                c.coverage.by_uid += 1;
+                if !o.name.trim().eq_ignore_ascii_case(n.name.trim()) {
+                    c.coverage.name_mismatches.push(NameMismatch { key: k.clone(), old_name: o.name.clone(), new_name: n.name.clone() });
+                }
+            }
+        }
         let mut ch = Vec::new();
         let mut push = |field: &str, old: String, new: String, delta: Option<f64>| {
             if old != new {
@@ -197,6 +305,10 @@ pub fn to_text(c: &Comparison) -> String {
         c.finish_slip_days.map(|d| format!(" ({d:+} working days)")).unwrap_or_default()
     );
     s += &format!("added {}, removed {}, changed {}, unchanged {}\n", c.added.len(), c.removed.len(), c.changed.len(), c.unchanged);
+    s += &format!("{}\n", c.coverage.summary(&c.matched_by));
+    for w in [c.coverage.warning(), c.coverage.name_warning()].into_iter().flatten() {
+        s += &format!("{w}\n");
+    }
     for t in &c.added {
         s += &format!("+ [{}] {}  ({} → {})\n", t.key, t.name, fmt_dt(&t.start), fmt_dt(&t.finish));
     }
@@ -253,10 +365,16 @@ pub fn to_html(c: &Comparison, old_name: &str, new_name: &str) -> String {
         }
     }
     format!(
-        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Schedule comparison</title><style>body{{font-family:Segoe UI,Arial,sans-serif;margin:16px}}table{{border-collapse:collapse;font-size:13px}}td,th{{border:1px solid #ddd;padding:3px 8px;text-align:left}}th{{background:#f5f5f5}}.add td:first-child{{color:#2e7d32}}.rem td:first-child{{color:#c62828}}.late td:last-child{{color:#c62828}}.kpi{{display:inline-block;margin:0 18px 12px 0}}.kpi b{{font-size:20px;display:block}}</style></head><body>\n<h1>Schedule comparison</h1><p>{} → {} (matched by {})</p>\n<div class=\"kpi\"><b>{}</b>finish slip (working days)</div><div class=\"kpi\"><b>{}</b>added</div><div class=\"kpi\"><b>{}</b>removed</div><div class=\"kpi\"><b>{}</b>changed</div><div class=\"kpi\"><b>{}</b>unchanged</div>\n<p>Project finish: {} → {}</p>\n<table><tr><th>Change</th><th>Key</th><th>Task</th><th>Field</th><th>Old</th><th>New</th></tr>\n{rows}</table></body></html>\n",
+        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Schedule comparison</title><style>body{{font-family:Segoe UI,Arial,sans-serif;margin:16px}}table{{border-collapse:collapse;font-size:13px}}td,th{{border:1px solid #ddd;padding:3px 8px;text-align:left}}th{{background:#f5f5f5}}.add td:first-child{{color:#2e7d32}}.rem td:first-child{{color:#c62828}}.late td:last-child{{color:#c62828}}.kpi{{display:inline-block;margin:0 18px 12px 0}}.kpi b{{font-size:20px;display:block}}.warn{{color:#b45309;font-weight:bold}}</style></head><body>\n<h1>Schedule comparison</h1><p>{} → {} (matched by {})</p>\n<p class=\"cov\">{}</p>{}\n<div class=\"kpi\"><b>{}</b>finish slip (working days)</div><div class=\"kpi\"><b>{}</b>added</div><div class=\"kpi\"><b>{}</b>removed</div><div class=\"kpi\"><b>{}</b>changed</div><div class=\"kpi\"><b>{}</b>unchanged</div>\n<p>Project finish: {} → {}</p>\n<table><tr><th>Change</th><th>Key</th><th>Task</th><th>Field</th><th>Old</th><th>New</th></tr>\n{rows}</table></body></html>\n",
         esc(old_name),
         esc(new_name),
         c.matched_by,
+        esc(&c.coverage.summary(&c.matched_by)),
+        [c.coverage.warning(), c.coverage.name_warning()]
+            .into_iter()
+            .flatten()
+            .map(|w| format!("<p class=\"warn\">{}</p>", esc(&w)))
+            .collect::<String>(),
         c.finish_slip_days.map(|d| format!("{d:+}")).unwrap_or_else(|| "–".into()),
         c.added.len(),
         c.removed.len(),
