@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — coverage counts for sidecars and compare
+## v0.10.1 — coverage counts for sidecars and compare
 - `risk --uncertainty`: prints sidecar coverage (tasks covered, tasks that fell back to `--opt`/`--pess`, sidecar rows that matched no task), with a WARNING listing up to 10 of each when the sidecar looks stale. `--json` adds `uncertainty_coverage` (and the warning goes to stderr).
 - `risk --uncertainty`: a sidecar row whose activity ID/row/name matches no task is now reported as unmatched instead of aborting the run. Malformed rows (bad numbers, optimistic > pessimistic, ambiguous names) still fail.
 - `compare`: reports how many matched tasks were keyed by activity ID vs UID (or name) in text, HTML and JSON (`coverage`), and warns when tasks without an activity ID fell back to UID matching (e.g. a deleted alias). An empty activity ID now counts as missing.
