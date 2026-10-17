@@ -200,7 +200,7 @@ mpptool resources-load plan.xer load.csv    # resource_uid,resource,week_start,h
 ```
 
 Each assignment's work is spread over the working hours of the project calendar and summed per week (weeks start on
-Monday). Weekly capacity is the resource's max units × the plan's hours per week (40 h by default).
+Monday). Weekly capacity is the resource's max units × that week's calendar hours (40 h on the Standard calendar, less in holiday weeks).
 Material and cost resources are left out. Over-allocation is judged per week, not per day.
 
 ### Excel and Smartsheet export
