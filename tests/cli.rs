@@ -145,3 +145,137 @@ fn engine_flag_compatibility() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("removed in mpptool 0.6.1"));
 }
+
+#[test]
+fn from_csv_writes_float_into_xml() {
+    let xml = plan_xml("float");
+    let text = std::fs::read_to_string(&xml).unwrap();
+    assert!(text.contains("<TotalSlack>"), "TotalSlack should be written");
+    assert!(text.contains("<FreeSlack>"), "FreeSlack should be written");
+    // Backend (3SS+1, 6d) has 8h of total slack = 4800 tenths of a minute, read back by the MSPDI reader.
+    let tasks: serde_json::Value = serde_json::from_str(&run_ok(&["tasks", "--json", xml.to_str().unwrap()])).unwrap();
+    let backend = tasks.as_array().unwrap().iter().find(|t| t["name"] == "Backend").unwrap();
+    assert!(backend["total_slack_hours"].as_f64().unwrap() > 0.0);
+    // DCMA float checks no longer skip.
+    let chk: serde_json::Value = serde_json::from_str(&run_ok(&["check", "--json", xml.to_str().unwrap()])).unwrap();
+    let s = chk.to_string();
+    assert!(!s.contains("no total float in the file"), "float checks should run: {s}");
+}
+
+#[test]
+fn from_csv_honours_us_federal_holidays_and_custom_file() {
+    let out = tmp("plan-us.xml");
+    let o = out.to_str().unwrap();
+    let csv = fixture("plan.csv");
+    run_ok(&["from-csv", csv.to_str().unwrap(), o, "--holidays", "US", "--years", "2026-2027"]);
+    let s: serde_json::Value = serde_json::from_str(&run_ok(&["summary", "--json", o])).unwrap();
+    // Veterans Day (Wed 2026-11-11) pushes the finish one working day.
+    assert_eq!(s["finish"], "2026-11-12T17:00:00");
+    // 11 in 2026, 12 in 2027 (New Year's Day 2028 is observed on Friday 2027-12-31).
+    assert_eq!(s["calendar_exception_count"], 23);
+    let cals = run_ok(&["calendars", o]);
+    assert!(cals.contains("2026-11-26") && cals.contains("Thanksgiving"), "{cals}");
+    assert!(cals.contains("2027-07-05"), "Independence Day 2027 is observed Monday: {cals}");
+
+    let out2 = tmp("plan-custom.xml");
+    let o2 = out2.to_str().unwrap();
+    let hf = fixture("shutdown.csv");
+    run_ok(&["from-csv", csv.to_str().unwrap(), o2, "--holiday-file", hf.to_str().unwrap()]);
+    let cals = run_ok(&["calendars", o2]);
+    assert!(cals.contains("Year-end shutdown") && cals.contains("2026-11-28: working (Overtime Saturday)"), "{cals}");
+    let text = std::fs::read_to_string(&out2).unwrap();
+    assert!(text.contains("<FromTime>07:00:00</FromTime>") && text.contains("<ToTime>15:00:00</ToTime>"));
+}
+
+#[test]
+fn from_csv_six_day_weeks_and_overtime_shifts() {
+    let csv = fixture("plan.csv");
+    let run = |tag: &str, extra: &[&str]| -> serde_json::Value {
+        let out = tmp(&format!("plan-ww-{tag}.xml"));
+        let mut args = vec!["from-csv", csv.to_str().unwrap(), out.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        run_ok(&args);
+        serde_json::from_str(&run_ok(&["summary", "--json", out.to_str().unwrap()])).unwrap()
+    };
+    let base = run("std", &[]);
+    let six = run("six", &["--work-days", "mon-sat"]);
+    let ten = run("ten", &["--hours", "06:00-11:00,11:30-16:30"]);
+    let ot = run("ot", &["--day", "sat=07:00-12:00"]);
+    let f = |v: &serde_json::Value| v["finish"].as_str().unwrap().to_string();
+    assert_eq!(f(&base), "2026-11-11T17:00:00");
+    assert!(f(&six) < f(&base) && f(&ten) < f(&base) && f(&ot) < f(&base), "{} {} {}", f(&six), f(&ten), f(&ot));
+    assert!(f(&six) < f(&ot), "full Saturdays finish before half-day Saturday overtime");
+
+    let out = tmp("plan-ww-xml.xml");
+    run_ok(&["from-csv", csv.to_str().unwrap(), out.to_str().unwrap(), "--work-days", "all", "--hours", "07:00-19:00"]);
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(text.contains("<DayType>1</DayType>\n\t\t\t\t\t<DayWorking>1</DayWorking>"), "Sunday should be working");
+    assert!(text.contains("<FromTime>07:00:00</FromTime>") && text.contains("<ToTime>19:00:00</ToTime>"));
+    assert!(text.contains("<Name>Project Calendar</Name>"));
+}
+
+#[test]
+fn from_csv_rejects_bad_calendar_options() {
+    let csv = fixture("plan.csv");
+    let out = tmp("plan-bad.xml");
+    for bad in [
+        vec!["--holidays", "ZZ"],
+        vec!["--work-days", "funday"],
+        vec!["--hours", "17:00-08:00"],
+        vec!["--day", "sat"],
+        vec!["--years", "2028-2026"],
+        vec!["--hours-per-day", "0"],
+    ] {
+        let mut args = vec!["from-csv", csv.to_str().unwrap(), out.to_str().unwrap()];
+        args.extend_from_slice(&bad);
+        let o = bin().args(&args).output().unwrap();
+        assert!(!o.status.success(), "{bad:?} should fail");
+        assert!(!String::from_utf8_lossy(&o.stderr).is_empty());
+    }
+}
+
+#[test]
+fn holidays_command_lists_us_federal() {
+    let out = run_ok(&["holidays", "--country", "US", "--years", "2026", "--csv"]);
+    assert!(out.starts_with("date,weekday,country,name"));
+    assert_eq!(out.lines().count(), 12);
+    assert!(out.contains("2026-07-03,Fri,US,\"Independence Day\""));
+    let j: serde_json::Value = serde_json::from_str(&run_ok(&["holidays", "--country", "GB,DE", "--years", "2026", "--json"])).unwrap();
+    assert_eq!(j.as_array().unwrap().len(), 8 + 9);
+    assert!(run_ok(&["holidays", "--country", "list"]).contains("MX"));
+}
+
+#[test]
+fn risk_command_reports_percentiles() {
+    let csv = fixture("plan.csv");
+    let j: serde_json::Value =
+        serde_json::from_str(&run_ok(&["risk", csv.to_str().unwrap(), "--runs", "500", "--json", "--holidays", "US"])).unwrap();
+    assert_eq!(j["runs"], 500);
+    assert_eq!(j["deterministic_finish"], "2026-11-12T17:00:00");
+    let p: Vec<&str> = j["percentiles"].as_array().unwrap().iter().map(|p| p["label"].as_str().unwrap()).collect();
+    assert_eq!(p, ["P10", "P50", "P80", "P90"]);
+    let tasks = j["tasks"].as_array().unwrap();
+    assert!(tasks.iter().any(|t| t["name"] == "QA & fixes" && t["criticality"] == 1.0));
+    let text = run_ok(&["risk", csv.to_str().unwrap(), "--runs", "200"]);
+    assert!(text.contains("P80:") && text.contains("Criticality index"));
+}
+
+#[test]
+fn risk_and_cpm_run_on_imported_schedules() {
+    for f in ["status.xml", "sample-p6.xml", "multi-project.xer", "holiday.xml"] {
+        let p = fixture(f);
+        let j: serde_json::Value = serde_json::from_str(&run_ok(&["risk", p.to_str().unwrap(), "--runs", "200", "--json"])).unwrap();
+        assert_eq!(j["percentiles"].as_array().unwrap().len(), 4, "{f}");
+        let c: serde_json::Value = serde_json::from_str(&run_ok(&["cpm", p.to_str().unwrap(), "--json"])).unwrap();
+        assert!(c.as_array().unwrap().iter().any(|r| r["critical"] == true), "{f}: no critical path");
+    }
+    // The project calendar's holidays are honoured: holiday.xml's 5-day task spans Christmas.
+    let c: serde_json::Value = serde_json::from_str(&run_ok(&["cpm", fixture("holiday.xml").to_str().unwrap(), "--json"])).unwrap();
+    assert_eq!(c[0]["early_finish"], "2026-12-29T17:00:00");
+    // `tasks --json` output is accepted as input.
+    let json = tmp("tasks-in.json");
+    std::fs::write(&json, run_ok(&["tasks", "--json", fixture("status.xml").to_str().unwrap()])).unwrap();
+    let a: serde_json::Value = serde_json::from_str(&run_ok(&["cpm", json.to_str().unwrap(), "--json"])).unwrap();
+    let b: serde_json::Value = serde_json::from_str(&run_ok(&["cpm", fixture("status.xml").to_str().unwrap(), "--json"])).unwrap();
+    assert_eq!(a.as_array().unwrap().len(), b.as_array().unwrap().len());
+}

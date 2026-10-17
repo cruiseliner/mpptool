@@ -1,0 +1,4 @@
+# Custom exceptions for tests: date[..date],name[,hours]
+date,name,hours
+2026-12-28..2026-12-31,Year-end shutdown
+2026-11-28,Overtime Saturday,07:00-15:00

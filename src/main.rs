@@ -79,7 +79,54 @@ enum Cmd {
         pin_dates: bool,
     },
     /// Schedule a new plan from CSV (name,start,duration_days,predecessors,outline_level[,resources,notes]) -> MSPDI XML
-    FromCsv { input: PathBuf, out: PathBuf },
+    FromCsv {
+        input: PathBuf,
+        out: PathBuf,
+        #[command(flatten)]
+        cal: CalArgs,
+    },
+    /// Monte Carlo schedule risk for any schedule (.csv plan, .json task list, .mpp/.mpx/.xml/.xer/P6 XML):
+    /// P10/P50/P80/P90 finish and criticality index (calendar-aware)
+    Risk {
+        input: PathBuf,
+        /// Number of simulation runs
+        #[arg(long, default_value_t = 10_000)]
+        runs: usize,
+        /// Random seed (same seed, same result)
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Optimistic duration as a fraction of duration_days, when the CSV has no `optimistic` column value
+        #[arg(long = "opt", default_value_t = 0.8)]
+        opt_factor: f64,
+        /// Pessimistic duration as a multiple of duration_days, when the CSV has no `pessimistic` column value
+        #[arg(long = "pess", default_value_t = 1.5)]
+        pess_factor: f64,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        cal: CalArgs,
+    },
+    /// Critical path of any schedule (.csv, .json, .mpp/.mpx/.xml/.xer/P6 XML): forward/backward pass, total and free float
+    Cpm {
+        input: PathBuf,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        cal: CalArgs,
+    },
+    /// List public holidays of built-in countries (table, --csv or --json)
+    Holidays {
+        /// Country codes, comma-separated (US, CA, GB, AU, DE, FR, IN, MX); `list` shows the supported countries
+        #[arg(long, default_value = "US")]
+        country: String,
+        /// Year or range, e.g. 2026 or 2026-2028 (default: the current year)
+        #[arg(long)]
+        years: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, conflicts_with = "json")]
+        csv: bool,
+    },
     /// Render a Gantt chart: self-contained offline HTML (.html) or plain SVG (.svg)
     Gantt {
         file: PathBuf,
@@ -175,6 +222,86 @@ enum MatchArg {
     Uid,
     ActivityId,
     Name,
+}
+
+/// Working-calendar options shared by `from-csv` and `risk`.
+#[derive(clap::Args, Debug)]
+struct CalArgs {
+    /// Public holidays to skip: country codes, comma-separated (US = US federal; CA, GB, AU, DE, FR, IN, MX), or none
+    #[arg(long, default_value = "none")]
+    holidays: String,
+    /// Years whose holidays apply, e.g. 2026-2028 (default: every year the schedule spans)
+    #[arg(long)]
+    years: Option<String>,
+    /// Custom holidays / exception days: CSV lines `date[..date],name[,hours]` (hours: off, work, or 07:00-15:00;…)
+    #[arg(long)]
+    holiday_file: Option<PathBuf>,
+    /// Working weekdays, e.g. mon-fri (default), mon-sat, all, mon,tue,thu
+    #[arg(long, default_value = "mon-fri")]
+    work_days: String,
+    /// Daily working hours, e.g. 08:00-12:00,13:00-17:00 (default) or 06:00-16:30 for a 10-hour shift
+    #[arg(long, default_value = "08:00-12:00,13:00-17:00")]
+    hours: String,
+    /// Override days in the weekly pattern (repeatable), e.g. sat=07:00-12:00 (Saturday overtime) or fri=off
+    #[arg(long = "day", value_name = "DAYS=HOURS")]
+    days: Vec<String>,
+    /// Working hours in one duration day (CSV duration_days and d lags)
+    #[arg(long, default_value_t = 8.0)]
+    hours_per_day: f64,
+    /// Calendar name written to the XML (default: Standard, or "Project Calendar" when customised)
+    #[arg(long)]
+    calendar_name: Option<String>,
+}
+
+impl CalArgs {
+    fn spec(&self) -> Result<mpptool::calendar::CalendarSpec, String> {
+        use mpptool::calendar::*;
+        let hours = parse_ranges(&self.hours).map_err(|e| format!("--hours: {e}"))?;
+        if hours.is_empty() {
+            return Err("--hours: no working time".into());
+        }
+        let mut s = CalendarSpec::with_week(parse_days(&self.work_days).map_err(|e| format!("--work-days: {e}"))?, &hours);
+        for d in &self.days {
+            let (set, r) = parse_day_override(d).map_err(|e| format!("--day: {e}"))?;
+            for (i, on) in set.iter().enumerate() {
+                if *on {
+                    s.week[i] = r.clone();
+                }
+            }
+        }
+        s.holidays = if self.holidays.eq_ignore_ascii_case("none") { String::new() } else { self.holidays.clone() };
+        s.years = self.years.as_deref().map(mpptool::holidays::parse_years).transpose().map_err(|e| format!("--years: {e}"))?;
+        if let Some(f) = &self.holiday_file {
+            let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+            s.custom = parse_holiday_file(&text, &s.default_hours()).map_err(|e| format!("{}: {e}", f.display()))?;
+        }
+        s.hours_per_day = self.hours_per_day;
+        if !s.is_standard() {
+            s.name = self.calendar_name.clone().unwrap_or_else(|| "Project Calendar".into());
+        } else if let Some(n) = &self.calendar_name {
+            s.name = n.clone();
+        }
+        Ok(s)
+    }
+}
+
+/// Rows + calendar for `risk`/`cpm`. Imported schedules use their own project calendar; `--holidays` adds to it.
+fn load_input(
+    input: &Path,
+    cal: &CalArgs,
+    ropts: &ReadOptions,
+    engine: Engine,
+) -> Result<(Vec<mpptool::from_csv::Row>, mpptool::calendar::CalendarSpec), String> {
+    let csv_spec = cal.spec()?;
+    let (rows, mut spec) = mpptool::risk::load_any(input, &csv_spec, ropts, engine)?;
+    if !input.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")) {
+        if !csv_spec.holidays.is_empty() {
+            spec.holidays = csv_spec.holidays.clone();
+            spec.years = csv_spec.years;
+        }
+        spec.custom.extend(csv_spec.custom.iter().cloned());
+    }
+    Ok((rows, spec))
 }
 
 fn parse_date(s: &str) -> Result<chrono::NaiveDate, String> {
@@ -330,8 +457,9 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
-        Cmd::FromCsv { input, out } => {
-            let p = from_csv::build(&input)?;
+        Cmd::FromCsv { input, out, cal } => {
+            let spec = cal.spec()?;
+            let p = from_csv::build_with(&input, &spec)?;
             write_file(&out, &mspdi_writer::write(&p, &WriteOptions::default()))?;
             eprintln!(
                 "wrote {} ({} tasks, finish {}, {} critical)",
@@ -340,6 +468,74 @@ fn run(cli: Cli) -> Result<(), String> {
                 fmt_dt(&p.finish),
                 p.tasks.iter().filter(|t| t.critical && !t.summary).count()
             );
+            Ok(())
+        }
+        Cmd::Risk { input, runs, seed, opt_factor, pess_factor, json, cal } => {
+            let (rows, spec) = load_input(&input, &cal, &opts, engine)?;
+            let opts = mpptool::risk::RiskOptions { runs, seed, opt_factor, pess_factor };
+            let r = mpptool::risk::simulate(&rows, chrono::Local::now().date_naive(), &spec, &opts)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?);
+            } else {
+                print!("{}", mpptool::risk::render_text(&r));
+            }
+            Ok(())
+        }
+        Cmd::Cpm { input, json, cal } => {
+            let (rows, spec) = load_input(&input, &cal, &opts, engine)?;
+            let v = mpptool::risk::cpm(&rows, chrono::Local::now().date_naive(), &spec)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
+            } else {
+                println!(
+                    "{:>5} {:<44} {:<16} {:<16} {:>8} {:>8} {:>8}  C",
+                    "Row", "Name", "Early start", "Early finish", "Rem(d)", "TF(d)", "FF(d)"
+                );
+                for r in &v {
+                    let name: String =
+                        format!("{}{}", "  ".repeat((r.outline_level - 1).max(0) as usize), r.name).chars().take(44).collect();
+                    println!(
+                        "{:>5} {:<44} {:<16} {:<16} {:>8.2} {:>8.2} {:>8.2}  {}",
+                        r.row,
+                        name,
+                        fmt_dt(&r.early_start),
+                        fmt_dt(&r.early_finish),
+                        r.remaining_days,
+                        r.total_float_days,
+                        r.free_float_days,
+                        if r.critical { "*" } else { "" }
+                    );
+                }
+            }
+            Ok(())
+        }
+        Cmd::Holidays { country, years, json, csv } => {
+            if country.eq_ignore_ascii_case("list") {
+                for (c, d) in mpptool::holidays::COUNTRIES {
+                    println!("{c}  {d}");
+                }
+                return Ok(());
+            }
+            let (a, b) = match years {
+                Some(y) => mpptool::holidays::parse_years(&y)?,
+                None => {
+                    let y = chrono::Datelike::year(&chrono::Local::now().date_naive());
+                    (y, y)
+                }
+            };
+            let v = mpptool::holidays::for_years(&country, a, b)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
+            } else if csv {
+                println!("date,weekday,country,name");
+                for h in &v {
+                    println!("{},{},{},\"{}\"", h.date, h.date.format("%a"), h.country, h.name.replace('"', "\"\""));
+                }
+            } else {
+                for h in &v {
+                    println!("{}  {}  {}  {}", h.date, h.date.format("%a"), h.country, h.name);
+                }
+            }
             Ok(())
         }
         Cmd::Gantt { file, out, critical_only, from, to, title, today } => {
